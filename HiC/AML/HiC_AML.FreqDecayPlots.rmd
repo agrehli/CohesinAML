@@ -1,0 +1,91 @@
+---
+title: "PE tag frequency distribution Cohesin AML"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+
+
+# load libraries and set directories
+```{r}
+#libraries
+library(reshape2)
+library(ggplot2)
+#paths
+DIRDATA="/misc/data/"
+WORKDIR=file.path(DIRDATA,"analysis/project_cohesin/Cohesin_AML/HiC")
+FIGURESDIR=file.path(WORKDIR,"QC")
+
+TAGDIR=file.path(DIRDATA,"processedData/tagDir/3Dchromatin/HiC/GRCh38/AML")
+#sample names TAGDIRECTORIES
+PATIENTS_CTRL<-c("ctr_16911", "ctr_18136_Rep1", "ctr_18519", "ctr_19405_Rep1", "ctr_19416", "ctr_21047_Rep1", "ctr_21290")
+PATIENTS_RAD<-c("RAD21_UKR186_Rep1", "RAD21_23039", "RAD21_26830", "RAD21_38455")
+PATIENTS_SA2<-c("SA2_24743", "SA2_27396_Rep1", "SA2_29728", "SA2_9708_Rep2")
+
+#regular sample names and metadata
+metadata<- read.table(file.path(WORKDIR,"AllmutvsCTRLmeta.2.csv"), header=T, sep=",")
+metadata$tagdirID<-c(PATIENTS_CTRL,PATIENTS_RAD,PATIENTS_SA2)
+metadata$patID<-sapply(metadata$short_ID,function(x) strsplit(as.character(x), "_")[[1]][2]) 
+```
+
+# get petag.FreqDistribution_1000 data
+```{r}
+#get one dataset for rownames
+data <- read.table(file.path(TAGDIR,paste0("HiC_AML_ctr_16911_filtered/petag.FreqDistribution_1000.txt")), header=T, sep="\t", stringsAsFactors=FALSE, check.names = FALSE)
+distfreqdf<-data.frame(row.names=data[,1])
+#read in all datasets for frequencies
+for (tagdir in metadata$tagdirID){
+data <- read.table(file.path(TAGDIR,paste0("HiC_AML_",tagdir,"_filtered/petag.FreqDistribution_1000.txt")), header=T, sep="\t", stringsAsFactors=FALSE, check.names = FALSE)
+distfreqdf[,paste0(tagdir,"_freq")]<-data[,2]
+}
+colnames(distfreqdf)<-metadata$patID
+distfreqdf$dist<-as.numeric(as.character(row.names(distfreqdf)))
+write.table(distfreqdf,file=file.path(FIGURESDIR,"CohAML_frequency.distance.txt"),sep="\t",quote=FALSE)
+
+##log 10
+logdata <- log10(distfreqdf)
+logdata <- logdata[is.finite(rowSums(logdata)),]
+#spline the curves
+splinedf<-data.frame(row.names=logdata$dist)
+for (pat in metadata$patID){
+splinedf[,pat]<-smooth.spline(logdata$dist,logdata[,pat], spar=0.75)[["y"]]
+}
+logdist<-smooth.spline(logdata$dist,logdata[,pat], spar=0.75)[["x"]]
+```
+
+# plot
+```{r}
+#stack data
+dat.st<-stack(as.data.frame(splinedf))   ##stack data to a single column
+dat.st$dist<- rep(logdist, times = ncol(splinedf))  ##add genenames as extra col
+dat.st$type=rep(metadata$group, each=length(splinedf[,1]))    ##add group identity as extra col
+dat.st$type<-factor(dat.st$type,levels=c("CTRL","SA2mut","RAD21mut"))
+
+
+#plot all in one and facet by mutation group
+allin1<-ggplot(dat.st,aes(x=dist,y=values, group=ind))+
+geom_line(aes(color=type))+
+scale_color_manual(values=c("CTRL"="firebrick","SA2mut"="seagreen3","RAD21mut"="mediumvioletred"))+
+theme_classic()+xlim(3,9)+ylim(-7,-1)+
+xlab("log10 distance")+ylab("log10 frequency")+facet_wrap(~type)
+
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allpat.png"),height=4,width=16)
+
+##add a line representing the average of the controls to each facet
+###ctrl average curve
+splinedf2<-splinedf
+splinedf2$meanCTRL<-rowMeans(splinedf2[,c(1:7)])
+splinedf2$logdist<-logdist
+splinedf2$ind<-"CTRLaverage"
+ctrav<-splinedf2[,c("logdist","meanCTRL")]
+
+allin1<-ggplot(dat.st,aes(x=dist,y=values))+
+geom_line(aes(color=type, group=ind))+
+scale_color_manual(values=c("CTRL"="firebrick","SA2mut"="seagreen3","RAD21mut"="mediumvioletred"))+
+theme_classic()+xlim(3,9)+ylim(-7,-1)+
+annotate(geom="line",x=ctrav$logdist,y=ctrav$meanCTRL,color="black",linetype = "longdash")+
+theme(axis.text=element_text(size=rel(2)),axis.title=element_text(size=rel(2)),strip.background = element_blank(), strip.text = element_blank())+
+xlab("log10 distance")+ylab("log10 frequency")+facet_wrap(~type)
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allpat.vs.CTRLaverage.png"),height=6,width=16)
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allpat.vs.CTRLaverage.pdf"),height=6,width=16)
+```

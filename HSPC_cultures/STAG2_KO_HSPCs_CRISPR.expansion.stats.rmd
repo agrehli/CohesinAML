@@ -1,0 +1,182 @@
+---
+title: "CRISPR cell number expansion and T7-assay results Analysis in CD34 HSPCs after STAG2 KO in bulk culture"
+author: "Alexander Fischer"
+date: "JUN 2022"
+output: html_document
+---
+#rbioc_3-12
+#set paths and load libraries
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+PROJDIR=file.path(DIR_DATA,"analysis/project_cohesin/CD34")
+WORKDIR=file.path(PROJDIR,"CRISPR/ExpansionData")
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+```
+# Cell Expansion data analysis
+## prepare data table
+```{r}
+#read in csv file
+Expdata<-read.csv(file.path(WORKDIR,"CD34_SA2KO_cultures_celllnumber_Rinput.csv"))
+row.names(Expdata)<-Expdata$X...timepoint 
+Expdata<-Expdata[-1]
+
+
+#define group vector
+group<-c(rep("NC",6),rep("KO",6))
+
+#calculate Expansion between split timepoints
+Expdata["d0_3_expansion",]<-Expdata["d3",]/Expdata["d0",]
+Expdata["d3_7_expansion",]<-Expdata["d7",]/Expdata["d3split",]
+Expdata["d7_14_expansion",]<-Expdata["d14",]/Expdata["d7split",]
+
+
+#means by condition
+##stack data and add CFU category as well as group in each row
+library(plyr)
+dat.st<-stack(as.data.frame(Expdata))   ##stack data to a single column can be used for geom_jitter points
+dat.st$timepoint<- rep(rownames(Expdata ), times = ncol(Expdata ))  ##add timpoints as extra col
+dat.st$group=rep(group, each=length(Expdata[,1]))    ##add group identity as extra col
+##calculate mean values and standard dev.
+mean.dat2<-ddply(dat.st, .(group,timepoint),
+summarize,
+mean= mean(values,na.rm=TRUE),
+sd=sd(values,na.rm=TRUE),
+N=sum(!is.na(values)))
+mean.dat2$SEM<-sqrt(mean.dat2$sd/mean.dat2$N)
+
+
+#set levels to desired order in plots
+mean.dat2$group <- factor(mean.dat2$group , levels = c("NC","KO"))
+dat.st$group <- factor(dat.st$group , levels = c("NC","KO"))
+
+```
+
+## test for normal distribution (expansion values) using histograms and shapiro test
+```{r}
+expansionsets=c("d0_3_expansion","d3_7_expansion","d7_14_expansion")
+for (exp in expansionsets){ 
+pdf(file=file.path(WORKDIR,paste0("Hist.",exp,".pdf")))
+for (grp in levels(dat.st$group)){ 
+shap<-shapiro.test(subset(dat.st,timepoint==exp & group==grp)[,"values"])
+hist(subset(dat.st,timepoint==exp & group==grp)[,"values"], main=paste0(exp," in ",grp),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shap[2]," ",shap[1]), side=3)
+}
+dev.off()
+}
+###all sets ar normally distributed
+```
+
+## parametric testing
+```{r}
+#paired ttest for the 3 expansion periods
+resd03<-t.test(formula=values ~ group,data=subset(dat.st,timepoint=="d0_3_expansion"), paired = TRUE) #p-value = 0.0245
+resd37<-t.test(formula=values ~ group,data=subset(dat.st,timepoint=="d3_7_expansion"), paired = TRUE) #p-value = 0.4067
+resd714<-t.test(formula=values ~ group,data=subset(dat.st,timepoint=="d7_14_expansion"), paired = TRUE) #p-value = 0.0198
+#subset mean and stacked data to expansion values only and add the pvalues as extra col
+dat.st.exp<-subset(dat.st,timepoint=="d0_3_expansion"|timepoint=="d3_7_expansion"|timepoint=="d7_14_expansion")
+mean.dat.exp<-subset(mean.dat2,timepoint=="d0_3_expansion"|timepoint=="d3_7_expansion"|timepoint=="d7_14_expansion")
+mean.dat.exp$pvaluevsCTRL<-""
+mean.dat.exp$siglvl<-""
+row.names(mean.dat.exp)<-paste0(mean.dat.exp$timepoint,mean.dat.exp$group)
+mean.dat.exp["d0_3_expansionKO","pvaluevsCTRL"]<-resd03$p.value
+mean.dat.exp["d3_7_expansionKO","pvaluevsCTRL"]<-resd37$p.value
+mean.dat.exp["d7_14_expansionKO","pvaluevsCTRL"]<-resd714$p.value
+mean.dat.exp["d0_3_expansionKO","siglvl"]<-"*"
+mean.dat.exp["d3_7_expansionKO","siglvl"]<-"ns"
+mean.dat.exp["d7_14_expansionKO","siglvl"]<-"*"
+write.table(mean.dat.exp,file.path(WORKDIR,"STAG2_CRISPR_expansion.ttest.txt"),sep="\t",row.names=TRUE)
+```
+
+## plot
+```{r}
+#create grouped barplot with standard deviation errorbars and dots for the individual replicates
+#show p-value vs CTRL significance level with stars in plot
+pdf(file=file.path(WORKDIR,"Expansion_stats_barplot_d3-7-14.pdf"), width = 5, height = 6)
+ggplot(mean.dat.exp, aes(timepoint, mean,fill=group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.8) +
+  geom_errorbar(data=mean.dat.exp,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = dat.st.exp, aes(x=timepoint,y=values,fill=group,color=group), position = position_dodge(width = 0.9),alpha=1,size=1)+
+  scale_fill_manual(values = c("NC" = "firebrick1", "KO" = "lightblue"),labels = c("CTRL gRNA", "STAG2 KO")) +
+  scale_color_manual(values = c("NC" = "firebrick3", "KO" = "darkblue"),labels = c("CTRL gRNA", "STAG2 KO")) +
+  #geom_text(data=mean.dat.exp,aes(y=max(dat.st.exp$values,na.rm=TRUE)+0.5),label=mean.dat.exp$siglvl,position = position_dodge(width = 0.9),size=6,hjust=4)+
+  xlab("expansion period") + ylab("fold expansion") +
+  scale_x_discrete(labels=c("d0 -\nd3","d3 -\nd7","d7 -\nd14")) +
+  theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=16),
+  legend.text=element_text(size=16),
+  legend.title=element_text(size=16,face="bold"),
+  legend.background = element_blank(),
+  #legend.box.background = element_rect(colour = "black"),
+  axis.title=element_text(size=16,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="bottom",
+  axis.line = element_line(colour = "black"),)+
+annotate("segment", x = 0.75, xend = 1.25, y = max(dat.st.exp$values,na.rm=TRUE)+0.5, yend = max(dat.st.exp$values,na.rm=TRUE)+0.5)+
+annotate("segment", x = 1.75, xend = 2.25, y = max(dat.st.exp$values,na.rm=TRUE)+0.5, yend = max(dat.st.exp$values,na.rm=TRUE)+0.5)+
+annotate("segment", x = 2.75, xend = 3.25, y = max(dat.st.exp$values,na.rm=TRUE)+0.5, yend = max(dat.st.exp$values,na.rm=TRUE)+0.5)+
+annotate("text", x=1, y=max(dat.st.exp$values,na.rm=TRUE)+0.6, label= mean.dat.exp["d0_3_expansionKO","siglvl"], size=5) +
+annotate("text", x=2, y=max(dat.st.exp$values,na.rm=TRUE)+0.6, label= mean.dat.exp["d3_7_expansionKO","siglvl"], size=3) +
+annotate("text", x=3, y=max(dat.st.exp$values,na.rm=TRUE)+0.6, label= mean.dat.exp["d7_14_expansionKO","siglvl"], size=5)+
+labs(fill = "",color="")
+dev.off()
+```
+
+
+# T7 assay dat
+## prepare data table and plot
+```{r}
+#read in csv file
+T7data<-read.csv(file.path(WORKDIR,"T7assayresultSummary.csv"))
+T7data$timepoint<-c("d3","d7","d14")
+T7data$timepoint<-factor(T7data$timepoint,levels=c("d3","d7","d14"))
+row.names(T7data)<-T7data$timepoint 
+T7data<-T7data[-1]
+
+
+T7dat.st<-stack(as.data.frame(T7data))   ##stack data to a single column can be used for geom_jitter points
+T7dat.st$timepoint<- rep(rownames(T7data ), times = ncol(T7data ))  ##add timpoints as extra col
+
+##calculate mean values and standard dev.
+mean.T7dat<-ddply(T7dat.st, .(timepoint),
+summarize,
+mean= mean(values,na.rm=TRUE),
+sd=sd(values,na.rm=TRUE),
+N=sum(!is.na(values)))
+#show results
+mean.T7dat
+
+#barplot by timepoint
+pdf(file=file.path(WORKDIR,"T7_stats_barplot_d3-7-14.pdf"), width = 5, height = 6)
+ggplot(mean.T7dat, aes(timepoint, mean,fill=timepoint)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.8) +
+  geom_errorbar(data=mean.T7dat,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = T7dat.st, aes(x=timepoint,y=values,fill=timepoint,color=timepoint), position = position_dodge(width = 0.9),alpha=0.75,size=4)+
+  scale_fill_manual(values = c("d3" = "lightblue1", "d7" = "lightblue2","d14" = "lightblue3")) +
+  scale_color_manual(values = c("d3" = "darkgrey", "d7" = "darkgrey","d14" = "darkgrey")) +
+  xlab("timepoint") + ylab("percentage of cut fragment") +
+  scale_x_discrete(labels=c("d3","d7","d14")) +
+  theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=16),
+  legend.text=element_text(size=16),
+  legend.title=element_text(size=16,face="bold"),
+  legend.background = element_blank(),
+  #legend.box.background = element_rect(colour = "black"),
+  axis.title=element_text(size=16,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="bottom",
+  axis.line = element_line(colour = "black"),)
+dev.off()
+```

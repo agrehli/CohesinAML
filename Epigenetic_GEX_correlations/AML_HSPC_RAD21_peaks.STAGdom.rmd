@@ -1,0 +1,283 @@
+---
+title: "RAD21 enrichment of CD34-specific peaks in cohesin mut AML"
+author: Alexander Fischer
+output: html_document
+---
+#rbioc_3-12
+# set paths and load libraries
+```{r setup, include=FALSE}
+#paths
+DIR_DATA="/misc/data"
+PROJDIR<-file.path(DIR_DATA,"analysis/project_cohesin")
+WORKDIR<-file.path(PROJDIR,"Cohesin_AML/ChIP_analysis")
+ANNDIR<-file.path(WORKDIR,"annotation_tables")
+FIGURESDIR=file.path(WORKDIR,"figures","CD34peak_in_AML")
+STAGdompeaks<-file.path(PROJDIR,"CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12/diffPeaks/SA1vsSA2/subsetByCTCF")
+
+#libraries
+library(ggplot2)
+library(edgeR)
+library(dplyr)
+
+#variables
+MUTS<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+```
+
+# read in annotated data and metadata: 
+```{r}
+
+data <- read.delim(file.path(ANNDIR,"Allpat_CD34.RAD21.peaks.ann.Rinput.txt"), row.names=1)
+#set variables using metadata file 
+group <- factor(c(rep("CTRL",20), rep("RAD21mut",10), rep("SA2mut",15)))
+metadata <- read.csv(file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis/Rad21_AML_meta.csv"),row.names="X...ChIP.ID")
+colnames(data)<-metadata$shortID_patID
+group<-factor(metadata$group,levels=c("ctr", "Rad21", "SA2"))
+NPM1status<- factor(as.character(metadata$npm1))
+FLT3status<-factor(as.character(metadata$flt3itd))
+RUNX1status<-factor(as.character(metadata$RUNX1))
+sex<-factor(as.character(metadata$sex))
+```
+# set up edgeR contrast
+```{r}
+d <- DGEList(counts=data,group=group)
+d <- calcNormFactors(d)
+design <- model.matrix(~0 + group + NPM1status + sex + RUNX1status+FLT3status)
+rownames(design) <- colnames(d)
+d <- estimateDisp(d, design, robust=TRUE)
+d$common.dispersion #0.1839631
+fit <- glmQLFit(d, design)
+#contrasts
+conSA2 <- makeContrasts(groupSA2 - groupctr, levels=design)
+conRAD21 <- makeContrasts(groupRad21 - groupctr, levels=design)
+#resulttables
+res2 <- glmQLFTest(fit, contrast=conSA2)
+res21 <- glmQLFTest(fit, contrast=conRAD21)
+```
+# read in peaksets in lists
+```{r}
+##read in RAD21 peak names with STAG1 or STAG2 domination subset by CTCF overlap
+###using same peaksets as above but separated by CTCF###
+SA12domBYCTCF<-vector(mode = "list")
+SA12domBYCTCF[["SA1dom_noCTCF"]]<-row.names(read.delim(file.path(STAGdompeaks,"SA1dom_noCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["SA1dom_withCTCF"]]<-row.names(read.delim(file.path(STAGdompeaks,"SA1dom_withCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["SA2dom_noCTCF"]]<-row.names(read.delim(file.path(STAGdompeaks,"SA2dom_noCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["SA2dom_withCTCF"]]<-row.names(read.delim(file.path(STAGdompeaks,"SA2dom_withCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["common_noCTCF"]]<-row.names(read.delim(file.path(STAGdompeaks,"common_noCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["common_withCTCF"]]<-row.names(read.delim(file.path(STAGdompeaks,"common_withCTCF.txt"), header=T, sep="\t",row.names=1))
+
+##set index
+cats<-c("SA1dom_noCTCF","SA1dom_withCTCF","SA2dom_noCTCF","SA2dom_withCTCF","common_noCTCF","common_withCTCF")
+for (cat in cats) {
+SA12domBYCTCF[[paste0("ind_",cat)]]<- rownames(fit) %in% SA12domBYCTCF[[cat]]
+}
+##index list for complete set
+SA12domBYCTCF[[paste0("ind_all")]]<- list(SA12domBYCTCF[["ind_SA1dom_noCTCF"]],SA12domBYCTCF[["ind_SA1dom_withCTCF"]],SA12domBYCTCF[["ind_SA2dom_noCTCF"]],SA12domBYCTCF[["ind_SA2dom_withCTCF"]],SA12domBYCTCF[["ind_common_noCTCF"]],SA12domBYCTCF[["ind_common_withCTCF"]])
+names(SA12domBYCTCF[[paste0("ind_all")]])<-cats
+
+```
+
+# fry for peaksets
+```{r}
+#fry for all three types at once in STAG2mut or RAD21mut  contrast
+fr_SA2indDOM_byCTCF <- fry(d, index=SA12domBYCTCF[[paste0("ind_all")]], design=design, contrast=conSA2)
+fr_SA2indDOM_byCTCF
+write.table(fr_SA2indDOM_byCTCF,file=file.path(FIGURESDIR,"PSEA.STAGdom.in.HSPCs.byCTCF.STAG2mut.txt"),sep="\t",quote=FALSE)
+#                NGenes Direction       PValue          FDR PValue.Mixed
+#common_noCTCF    27243      Down 8.411288e-05 0.0003427666 6.002665e-08
+#SA1dom_withCTCF    926        Up 1.142555e-04 0.0003427666 2.750044e-07
+#SA2dom_noCTCF      349      Down 2.154562e-04 0.0004309123 1.565364e-07
+#SA2dom_withCTCF    968      Down 1.830191e-03 0.0024694542 7.923332e-06
+#SA1dom_noCTCF     1128      Down 2.251676e-03 0.0024694542 1.453894e-05
+#common_withCTCF  48246        Up 2.469454e-03 0.0024694542 1.681808e-06
+
+fr_RADindDOM_byCTCF <- fry(d, index=SA12domBYCTCF[[paste0("ind_all")]], design=design, contrast=conRAD21)
+fr_RADindDOM_byCTCF
+write.table(fr_RADindDOM_byCTCF,file=file.path(FIGURESDIR,"PSEA.STAGdom.in.HSPCs.byCTCF.RAD21mut.txt"),sep="\t",quote=FALSE)
+#                NGenes Direction      PValue         FDR PValue.Mixed
+#SA2dom_noCTCF      349      Down 0.001504438 0.009026626 0.0000409564
+#SA1dom_withCTCF    926        Up 0.096283401 0.288850203 0.0473208693
+#SA1dom_noCTCF     1128        Up 0.234414377 0.468828754 0.0414442263
+#common_withCTCF  48246        Up 0.480657053 0.720985580 0.0349802380
+#SA2dom_withCTCF    968      Down 0.783378364 0.917036190 0.0273836318
+#common_noCTCF    27243      Down 0.917036190 0.917036190 0.0056613154
+```
+
+# Barcodeplots showing RAD12 enrichments
+```{r}
+dir.create(file.path(FIGURESDIR,"PSEA_STAGdom_byCTCFsubset"))
+#barcode plots showing STAG1 vs STAG2 dominant pos divided by CTCF subset in STAG2 or RAD21 MUT contrasts
+CTCFcats=c("noCTCF","withCTCF")
+MUTS=c("SA2mut","RAD21mut")
+reslist<-list(res2,res21)
+names(reslist)<-MUTS
+frylist<-list(fr_SA2indDOM_byCTCF,fr_RADindDOM_byCTCF)
+names(frylist)<-MUTS
+for (CTCF in CTCFcats){
+  for (MUT in MUTS){
+pdf(file=file.path(FIGURESDIR,"PSEA_STAGdom_byCTCFsubset",paste0("edgeR_barcodeplot_RAD21",CTCF,".STAGdom.",MUT,".pdf")), height=6, width=6)
+barcodeplot(reslist[[MUT]]$table$logFC, 
+            index=SA12domBYCTCF[[paste0("ind_SA2dom_",CTCF)]] ,
+            index2=SA12domBYCTCF[[paste0("ind_SA1dom_",CTCF)]],
+            labels=c("CTRL-AML",MUT),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0(MUT, ": RAD21 at STAG dominant positions ", CTCF), cex.main=0.5,
+            col.bars=c("#12cb65","#835f04"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: RAD21 peaks at SA2 dominant positions  '~'('*.(frylist[[MUT]][paste0("SA2dom_",CTCF),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[MUT]][paste0("SA2dom_",CTCF),"FDR"])*'('*.(frylist[[MUT]][paste0("SA2dom_",CTCF),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('golden bars: RAD21 peaks at SA1 dominant positions  '~'('*.(frylist[[MUT]][paste0("SA1dom_",CTCF),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[MUT]][paste0("SA1dom_",CTCF),"FDR"])*'('*.(frylist[[MUT]][paste0("SA1dom_",CTCF),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+#barcode plots showing common pos divided by CTCF subset in STAG1 or STAG2 MUT contrasts
+for (MUT in MUTS){
+pdf(file=file.path(FIGURESDIR,"PSEA_STAGdom_byCTCFsubset",paste0("edgeR_barcodeplot_RAD21.common.byCTCFstatus.",MUT,".pdf")), height=6, width=6)
+barcodeplot(reslist[[MUT]]$table$logFC, 
+            index=SA12domBYCTCF[[paste0("ind_common_withCTCF")]] ,
+            index2=SA12domBYCTCF[[paste0("ind_common_noCTCF")]],
+            labels=c("CTRL-AML",MUT),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0(MUT, ": RAD21 at STAG1/2 common positions "), cex.main=0.5,
+            col.bars=c("#3737dfc0","#313131"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('RAD21 peaks at common sites with CTCF '~'('*.(frylist[[MUT]]["common_withCTCF","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[MUT]]["common_withCTCF","FDR"])*'('*.(frylist[[MUT]]["common_withCTCF","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('RAD21 peaks at common sites without CTCF  '~'('*.(frylist[[MUT]]["common_noCTCF","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[MUT]]["common_noCTCF","FDR"])*'('*.(frylist[[MUT]]["common_noCTCF","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+```
+
+# summarize Padj values in barplots
+```{r}
+##negative log FDR (positive value)
+fr_SA2indDOM_byCTCF$logFDR<--log(fr_SA2indDOM_byCTCF$FDR)
+fr_RADindDOM_byCTCF$logFDR<--log(fr_RADindDOM_byCTCF$FDR)
+#for down direction use log FDR (negativ value)
+fr_SA2indDOM_byCTCF$logFDR[fr_SA2indDOM_byCTCF$Direction == "Down"] <- log(subset(fr_SA2indDOM_byCTCF,Direction=="Down")[,"FDR"])
+fr_RADindDOM_byCTCF$logFDR[fr_RADindDOM_byCTCF$Direction == "Down"] <- log(subset(fr_RADindDOM_byCTCF,Direction=="Down")[,"FDR"])
+#define categories
+fr_SA2indDOM_byCTCF$STAGcat<-strsplit2(rownames(fr_SA2indDOM_byCTCF),"_",fixed = TRUE)[,1]
+fr_SA2indDOM_byCTCF$CTCFcat<-strsplit2(rownames(fr_SA2indDOM_byCTCF),"_",fixed = TRUE)[,2]
+fr_RADindDOM_byCTCF$STAGcat<-strsplit2(rownames(fr_RADindDOM_byCTCF),"_",fixed = TRUE)[,1]
+fr_RADindDOM_byCTCF$CTCFcat<-strsplit2(rownames(fr_RADindDOM_byCTCF),"_",fixed = TRUE)[,2]
+#set levels
+fr_SA2indDOM_byCTCF$STAGcat<-factor(fr_SA2indDOM_byCTCF$STAGcat,levels=c("SA2dom","SA1dom","common"))
+fr_SA2indDOM_byCTCF$CTCFcat<-factor(fr_SA2indDOM_byCTCF$CTCFcat,levels=c("withCTCF","noCTCF"))
+fr_RADindDOM_byCTCF$STAGcat<-factor(fr_RADindDOM_byCTCF$STAGcat,levels=c("SA2dom","SA1dom","common"))
+fr_RADindDOM_byCTCF$CTCFcat<-factor(fr_RADindDOM_byCTCF$CTCFcat,levels=c("withCTCF","noCTCF"))
+
+
+##plot for STAG2mut
+
+p1<-ggplot(fr_SA2indDOM_byCTCF, aes(x= logFDR, y= rownames(fr_SA2indDOM_byCTCF),fill = STAGcat)) +
+geom_bar(aes(colour=CTCFcat),size=1.5, width=0.8, position = position_dodge(width=0.5), stat="identity") +
+  scale_fill_manual(values = c("SA2dom"="#12cb65","SA1dom"="darkgoldenrod3","common"="grey"))+
+  scale_color_manual(values = c("noCTCF"="firebrick1","withCTCF"="darkblue"))+
+  scale_x_continuous(limits = c(-18,18),labels=abs,breaks = seq(-18,18,by=6)) + 
+  xlab("- log2 FDR of RAD21 PSEA") + ylab(" ") + 
+  ggtitle("STAG2-mutant vs CTRL-AML") +
+  theme(
+  axis.text.x = element_text(angle=0,vjust=0.2,size=16),
+  legend.text = element_text(angle=0,vjust=0.2,size=16),
+  axis.text.y = element_text(angle=0,hjust=0.95,vjust=0.2,size=0),
+  legend.position="none", legend.title=element_blank(),
+  axis.title=element_text(size=16,face="bold"), plot.title = element_text(size = 20, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(colour = "black"),)+
+geom_vline(xintercept = -log2(0.05),linetype = 'dashed') + 
+geom_vline(xintercept = log2(0.05),linetype = 'dashed',color="black")+
+geom_text(aes(x=-12,y="common_withCTCF",label="Down"),size=6,vjust=-0.1,fontface = "bold")+
+geom_text(aes(x=12,y="common_withCTCF",label="Up"),size=6,vjust=-0.1,fontface = "bold")
+
+pdf(file=file.path(FIGURESDIR,"PSEA_STAGdom_byCTCFsubset",paste0("RAD21.PSEA.summary.byCTCF.STAG2mut.pdf")), height=3, width=10)
+plot(p1)
+dev.off()
+
+
+##plot for RAD21mut
+p2<-ggplot(fr_RADindDOM_byCTCF, aes(x= logFDR, y= rownames(fr_RADindDOM_byCTCF),fill = STAGcat)) +
+geom_bar(aes(colour=CTCFcat), size=1.5,width=0.8, position = position_dodge(width=0.5), stat="identity") +
+  scale_fill_manual(values = c("SA2dom"="#12cb65","SA1dom"="darkgoldenrod3","common"="grey"))+
+  scale_color_manual(values = c("noCTCF"="firebrick1","withCTCF"="darkblue"))+
+  scale_x_continuous(limits = c(-18,18),labels=abs,breaks = seq(-18,18,by=6)) + 
+  xlab("- log2 FDR of RAD21 PSEA") + ylab(" ") + 
+  ggtitle("RAD21-mutant vs CTRL-AML") +
+  theme(
+  axis.text.x = element_text(angle=0,vjust=0.2,size=16),
+  axis.text.y = element_text(angle=0,hjust=0.95,vjust=0.2,size=0),
+  legend.text = element_text(angle=0,vjust=0.2,size=16),
+  legend.position="none", legend.title=element_blank(),
+  axis.title=element_text(size=16,face="bold"), plot.title = element_text(size = 20, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(colour = "black"),)+
+geom_vline(xintercept = -log2(0.05),linetype = 'dashed') + 
+geom_vline(xintercept = log2(0.05),linetype = 'dashed',color="black")+
+geom_text(aes(x=-12,y="common_withCTCF",label="Down"),size=6,vjust=-0.1,fontface = "bold")+
+geom_text(aes(x=12,y="common_withCTCF",label="Up"),size=6,vjust=-0.1,fontface = "bold")
+
+pdf(file=file.path(FIGURESDIR,"PSEA_STAGdom_byCTCFsubset",paste0("RAD21.PSEA.summary.byCTCF.RAD21mut.pdf")), height=3, width=10)
+plot(p2)
+dev.off()
+
+#both combined
+library(cowplot)
+#extract legend
+legend_b <- get_legend(
+  p1 + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+#plot both plots in grid and add one legend
+pgrid <- plot_grid(p1, p2, ncol = 2)
+pdf(file=file.path(FIGURESDIR,"PSEA_STAGdom_byCTCFsubset",paste0("RAD21.PSEA.summary.byCTCF.STAG2mut.RAD21mut.pdf")), height=4, width=12)
+plot_grid(pgrid,legend_b,ncol=1,rel_heights=c(1.2,0.2))
+dev.off()
+
+
+#smaller version for main figure
+p3<-ggplot(fr_SA2indDOM_byCTCF, aes(x= logFDR, y= rownames(fr_SA2indDOM_byCTCF),fill = STAGcat)) +
+geom_bar(aes(colour=CTCFcat),size=1.5, width=0.8, position = position_dodge(width=0.5), stat="identity") +
+  scale_fill_manual(values = c("SA2dom"="#12cb65","SA1dom"="darkgoldenrod3","common"="grey"))+
+  scale_color_manual(values = c("noCTCF"="firebrick1","withCTCF"="darkblue"))+
+  scale_x_continuous(limits = c(-10,10),labels=abs,breaks = seq(-10,10,by=2.5)) + 
+  xlab("- log2 FDR of RAD21 PSEA") + ylab(" ") + 
+  ggtitle("STAG2-mutant vs CTRL-AML") +
+  theme(
+  axis.text.x = element_text(angle=0,vjust=0.2,size=16),
+  legend.text = element_text(angle=0,vjust=0.2,size=16),
+  axis.text.y = element_text(angle=0,hjust=0.95,vjust=0.2,size=0),
+  legend.position="none", legend.title=element_blank(),
+  axis.title=element_text(size=16,face="bold"), plot.title = element_text(size = 20, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(colour = "black"),)+
+geom_vline(xintercept = -log2(0.05),linetype = 'dashed') + 
+geom_vline(xintercept = log2(0.05),linetype = 'dashed',color="black")+
+geom_text(aes(x=-8,y="SA1dom_noCTCF",label="RAD21 \n loss"),size=6,vjust=0.5,fontface = "bold")+
+geom_text(aes(x=8,y="SA1dom_noCTCF",label="RAD21 \n gain"),size=6,vjust=0.5,fontface = "bold")
+
+ggsave(p3,file=file.path("/misc/data/analysis/project_cohesin/Cohesin_AML/ChIP_analysis/figures/RAD21.PSEA.summary.byCTCF.STAG2mut.small.pdf"),height=8, width=6)
+```

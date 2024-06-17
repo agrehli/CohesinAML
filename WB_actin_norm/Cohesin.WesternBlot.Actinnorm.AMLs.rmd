@@ -1,0 +1,395 @@
+---
+title: "RAD21 actin normalized Protein levels in Cohesin mutant AMLs"
+author: "Alexander Fischer"
+date: "Jan 2024"
+output: html_document
+---
+
+#rbioc_3-12
+# set paths and load libraries
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+PROJDIR=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML")
+WORKDIR=file.path(PROJDIR,"selection/WesternBlotQuantification")
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+library(rstatix)
+library(data.table)
+```
+
+# RAD21 actin normalization
+## prepare data tables
+```{r}
+#read in csv files
+RAD21normdata<-read.csv(file.path(WORKDIR,"AML_RAD21_actinnorm_WB2.csv"))
+colnames(RAD21normdata)[1]<-"VialID"
+
+
+#define group vectors
+RAD21normdata$Group<-factor(RAD21normdata$Group,levels=c("CTRL-AML","STAG2-AML","RAD21-AML"))
+group<-RAD21normdata$Group
+#get means of replicates
+RAD21normdata$Average_RAD21_Actin<-rowMeans(subset(RAD21normdata, select = c("RAD21_Actin_Rep1","RAD21_Actin_Rep2", "RAD21_Actin_Rep3","RAD21_Actin_Rep4")), na.rm = TRUE)
+row.names(RAD21normdata)<-RAD21normdata$PatID
+##get mean and sd by group
+# Convert your data.frame to data.table
+RAD21normdata <- as.data.table(RAD21normdata)
+# Calculate mean and sd for each group
+mean.dat <- RAD21normdata[, .(mean = mean(as.numeric(Average_RAD21_Actin), na.rm = TRUE),
+                        sd = sd(as.numeric(Average_RAD21_Actin), na.rm = TRUE)),
+                    by = Group]
+mean.dat
+
+RAD21normdata<-as.data.frame(RAD21normdata)
+mean.dat<-as.data.frame(mean.dat)
+
+```
+
+## test for normal distribution  using histograms and shapiro test
+```{r}
+shapiroDF<-data.frame()
+pdf(file=file.path(WORKDIR,paste0("Hist.Average_RAD21_Actin.pdf")))
+for (grp in levels(RAD21normdata$Group)){ 
+shap<-shapiro.test(as.numeric(subset(RAD21normdata,Group==grp)[,"Average_RAD21_Actin"]))
+shapiroDF[grp,"W"]<-shap$statistic
+shapiroDF[grp,"Pvalue"]<-shap$p.value
+hist(subset(RAD21normdata,Group==grp)[,"Average_RAD21_Actin"], main=paste0("Average_RAD21_Actin in ",grp),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shap[2]," ",shap[1]), side=3)
+}
+dev.off()
+
+shapiroDF###all individual sets are normally distributed, but low sample number may be limiting..
+
+
+#check also for combined set
+shap2<-shapiro.test(as.numeric(RAD21normdata$Average_RAD21_Actin)) 
+shap2#W = 0.90996, p-value = 0.009756 #not normally distributed!
+pdf(file=file.path(WORKDIR,paste0("Hist.Average_RAD21_Actin.comb.pdf")))
+hist(RAD21normdata[,"Average_RAD21_Actin"], main=paste0("Average_RAD21_Actin in complete set"),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shap2[2]," ",shap[1]), side=3)
+dev.off()
+
+pdf(file=file.path(WORKDIR,paste0("Q-Qplot.Average_RAD21_Actin.comb.pdf")))
+qqnorm(RAD21normdata$Average_RAD21_Actin)
+qqline(RAD21normdata$Average_RAD21_Actin)
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shap2[2]," ",shap[1]), side=3)
+dev.off()
+```
+
+
+## parametric testing - possibly not very approprite due to distribution isssues
+```{r}
+#One-way  ANVOVA: general testing for significant differences of groups for each CFU cat
+anova_result <- aov(Average_RAD21_Actin ~ Group, data = RAD21normdata)
+summary(anova_result)
+#            Df Sum Sq Mean Sq F value  Pr(>F)   
+#Group        2  2.737  1.3687   8.507 0.00113 **
+#Residuals   31  4.987  0.1609  
+
+#Post-hoc Tests: pvalues for the individual comparisons
+posthoc_tukey <- TukeyHSD(anova_result)
+posthoc_tukey
+#                                 diff        lwr        upr     p adj
+#STAG2-AML-CTRL-AML  -0.58255296 -0.9938774 -0.1712285 0.0041333
+#RAD21-AML-CTRL-AML  -0.55360935 -0.9649338 -0.1422849 0.0064822
+#RAD21-AML-STAG2-AML  0.02894361 -0.4364169  0.4943041 0.9871701
+
+#t-tests
+t_test_result_SA2vsCTRL <- t.test(Average_RAD21_Actin ~ Group, data = RAD21normdata,
+                        subset = Group %in% c("STAG2-AML", "CTRL-AML"))
+    ##t = 3.6134, df = 23, p-value = 0.001461                   
+t_test_result_RADvsCTRL <- t.test(Average_RAD21_Actin ~ Group, data = RAD21normdata,
+                        subset = Group %in% c("RAD21-AML", "CTRL-AML"))
+    ##t = 3.8487, df = 20.496, p-value = 0.0009661
+t_test_result_RADvsSA2 <- t.test(Average_RAD21_Actin ~ Group, data = RAD21normdata,
+                        subset = Group %in% c("RAD21-AML", "STAG2-AML"))
+    ##t = -0.25576, df = 13.659, p-value = 0.8019
+```
+
+## non-parametric testing - maybe more appropriate given the total distribution
+```{r}
+#general testing for significant differences of groups using kruskal-wallis test
+kruskal.test(Average_RAD21_Actin ~ Group, data = RAD21normdata)  #Kruskal-Wallis chi-squared = 11.919, df = 2, p-value = 0.002582
+
+#wilcox tests with Benjamini-Hochberg adjustment of pvalues for the individual comparisons
+wilcox<-wilcox_test(formula=Average_RAD21_Actin ~ Group,data=RAD21normdata, paired = FALSE, p.adjust.method = "BH")
+wilcox
+#  .y.          group1    group2      n1    n2 statistic     p p.adj p.adj.signif 
+# Average_RAD21~ CTRL-AML STAG2-~    16     9       121 0.004 0.007 **          
+# Average_RAD21~ CTRL-AML RAD21-~    16     9       123 0.003 0.007 **          
+# Average_RAD21~ STAG2-A~ RAD21-~     9     9        37 0.796 0.796 ns  
+
+write.table(wilcox,file=file.path(WORKDIR,"wilcoxtest.BH.adjusted.txt"),sep="\t",quote=FALSE)
+
+```
+
+
+
+
+## show adj. p-value (wilcox) significance level with stars in plot
+```{r}
+##plot barplots with replicates as dots
+bplotexp<-ggplot(mean.dat, aes(Group, mean,fill=Group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.6) +
+  geom_errorbar(data=mean.dat,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = RAD21normdata, aes(x=Group,y=Average_RAD21_Actin,fill=Group,color=Group),alpha=1,size=3,width = 0.2)+
+  scale_fill_manual(values = c("CTRL-AML" = "firebrick3", "STAG2-AML" = "seagreen2", "RAD21-AML" = "plum1")) +
+  scale_color_manual(values = c("CTRL-AML" = "firebrick1", "STAG2-AML" = "seagreen3", "RAD21-AML" = "plum3")) +
+  scale_x_discrete(labels=c("CTRL\nAML","STAG2\nmut","RAD21\nmut")) +
+  xlab("") + ylab("Actin-normalized RAD21 levels") +
+  annotate("text", x=1.5, y=max(RAD21normdata$Average_RAD21_Actin,na.rm=TRUE)+0.2, label= "**", size=12) +
+  annotate("text", x=2, y=max(RAD21normdata$Average_RAD21_Actin,na.rm=TRUE)+0.5, label= "**", size=12)+
+  annotate("segment", x = 1, xend = 2, y = max(RAD21normdata$Average_RAD21_Actin,na.rm=TRUE)+0.1, yend = max(RAD21normdata$Average_RAD21_Actin,na.rm=TRUE)+0.1)+
+  annotate("segment", x = 1, xend = 3, y = max(RAD21normdata$Average_RAD21_Actin,na.rm=TRUE)+0.4, yend = max(RAD21normdata$Average_RAD21_Actin,na.rm=TRUE)+0.4)+
+  theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=12),
+  axis.title=element_text(size=12,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="none",
+  axis.line = element_line(colour = "black"),)
+
+#export plot
+ggsave(bplotexp,file=file.path(WORKDIR,"Barplot_Average_RAD21_Actin.padj.2.pdf"), width = 6, height = 5)
+
+
+```
+
+
+# STAG1 actin normalization
+## prepare data tables
+```{r}
+#read in csv files
+STAG1normdata<-read.csv(file.path(WORKDIR,"AML_STAG1_actinnorm_WB2.csv"))
+colnames(STAG1normdata)[1]<-"VialID"
+#define group vectors
+STAG1normdata$group<-factor(STAG1normdata$group,levels=c("CTRL-AML","STAG2-AML","RAD21-AML"))
+group2<-STAG1normdata$group
+#get means of replicates
+STAG1normdata$Average_STAG1_Actin<-rowMeans(subset(STAG1normdata, select = c("STAG1_Actin_Rep1","STAG1_Actin_Rep2","STAG1_Actin_Rep3")), na.rm = TRUE)
+row.names(STAG1normdata)<-STAG1normdata$PatID
+##get mean and sd by group
+# Convert your data.frame to data.table
+STAG1normdata <- as.data.table(STAG1normdata)
+# Calculate mean and sd for each group
+mean.dat1 <- STAG1normdata[, .(mean = mean(as.numeric(Average_STAG1_Actin), na.rm = TRUE),
+                        sd = sd(as.numeric(Average_STAG1_Actin), na.rm = TRUE)),
+                    by = group]
+mean.dat1
+
+STAG1normdata<-as.data.frame(STAG1normdata)
+mean.dat1<-as.data.frame(mean.dat1)
+
+```
+
+
+## test for normal distribution  using histograms and shapiro test
+```{r}
+#check also for combined set
+shapSTAG1<-shapiro.test(as.numeric(STAG1normdata$Average_STAG1_Actin)) 
+shapSTAG1#W = 0.9376, p-value = 0.3884 #likely normally distributed!
+pdf(file=file.path(WORKDIR,paste0("Hist.Average_STAG1_Actin.comb.2.pdf")))
+hist(STAG1normdata[,"Average_STAG1_Actin"], main=paste0("Average_STAG1_Actin in complete set"),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shapSTAG1[2]," ",shapSTAG1[1]), side=3)
+dev.off()
+
+pdf(file=file.path(WORKDIR,paste0("Q-Qplot.Average_STAG1_Actin.comb.2.pdf")))
+qqnorm(STAG1normdata$Average_STAG1_Actin)
+qqline(STAG1normdata$Average_STAG1_Actin)
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shapSTAG1[2]," ",shapSTAG1[1]), side=3)
+dev.off()
+```
+
+## parametric testing
+```{r}
+#One-way  ANVOVA: general testing for significant differences of groups for each CFU cat
+anova_resultSA1 <- aov(Average_STAG1_Actin ~ group, data = STAG1normdata)
+summary(anova_resultSA1)
+#            Df Sum Sq Mean Sq F value  Pr(>F)   
+#group        2  1.891  0.9454   3.124 0.0699 .
+
+#Post-hoc Tests: pvalues for the individual comparisons
+posthoc_tukeySA1 <- TukeyHSD(anova_resultSA1)
+posthoc_tukeySA1
+#                           diff         lwr      upr   p adj
+#STAG2-AML-CTRL-AML   0.3125575 -0.4161698 1.04128485 0.5267904
+#RAD21-AML-CTRL-AML  -0.5729940 -1.4078560 0.26186802 0.2124594
+#RAD21-AML-STAG2-AML -0.8855515 -1.7964607 0.02535759 0.0574475
+
+#t-tests
+t_test_result_SA2vsCTRL_STAG1 <- t.test(Average_STAG1_Actin ~ group, data = STAG1normdata,
+                        subset = group %in% c("STAG2-AML", "CTRL-AML"))
+t_test_result_SA2vsCTRL_STAG1                        
+##t = -1.0689, df = 11.783, p-value = 0.3065 
+t_test_result_RADvsCTRL_STAG1 <- t.test(Average_STAG1_Actin ~ group, data = STAG1normdata,
+                        subset = group %in% c("RAD21-AML", "CTRL-AML"))
+t_test_result_RADvsCTRL_STAG1 
+##t = 2.2275, df = 10.098, p-value = 0.04981
+
+
+#for comparison: wilcox test:
+wilcoxSA1<-wilcox_test(formula=Average_STAG1_Actin ~ group,data=STAG1normdata, paired = FALSE, p.adjust.method = "BH")
+wilcoxSA1
+#y.            group1   group2     n1    n2 statistic     p p.adj p.adj.signif    
+#Average_STAG1~ CTRL-AML STAG2-~    10     6        22 0.428 0.428 ns          
+#Average_STAG1~ CTRL-AML RAD21-~    10     4        33 0.076 0.114 ns          
+#Average_STAG1~ STAG2-A~ RAD21-~     6     4        23 0.019 0.057 ns  
+```
+
+## show adj. p-value (ttest) significance level
+```{r}
+##plot barplots with replicates as dots
+meanSA2<-subset(mean.dat1,group %in% c("STAG2-AML","CTRL-AML"))
+individSA2<-subset(STAG1normdata,group %in% c("STAG2-AML","CTRL-AML"))
+bplotSA1_SA2mut<-ggplot(meanSA2, aes(group, mean,fill=group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.6) +
+  geom_errorbar(data=meanSA2,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = individSA2, aes(x=group,y=Average_STAG1_Actin,fill=group,color=group),alpha=1,size=3,width = 0.2)+
+  scale_fill_manual(values = c("CTRL-AML" = "firebrick3", "STAG2-AML" = "seagreen2", "RAD21-AML" = "plum1")) +
+  scale_color_manual(values = c("CTRL-AML" = "firebrick1", "STAG2-AML" = "seagreen3", "RAD21-AML" = "plum3")) +
+  scale_x_discrete(labels=c("CTRL\nAML","STAG2\nmut")) +
+  xlab("") + ylab("Actin-normalized \n STAG1 levels") +
+  annotate("text", x=1.5, y=max(individSA2$Average_STAG1_Actin,na.rm=TRUE)+0.3, label= "P<0.53", size=6, fontface="italic") +
+  annotate("segment", x = 1, xend = 2, y = max(individSA2$Average_STAG1_Actin,na.rm=TRUE)+0.1, yend = max(STAG1normdata$Average_STAG1_Actin,na.rm=TRUE)+0.1)+
+   theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=12),
+  axis.title=element_text(size=12,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="none",
+  axis.line = element_line(colour = "black"),)
+
+meanRAD<-subset(mean.dat1,group %in% c("RAD21-AML","CTRL-AML"))
+individRAD<-subset(STAG1normdata,group %in% c("RAD21-AML","CTRL-AML"))
+bplotSA1_RAD21mut<-ggplot(meanRAD, aes(group, mean,fill=group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.6) +
+  geom_errorbar(data=meanRAD,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = individRAD, aes(x=group,y=Average_STAG1_Actin,fill=group,color=group),alpha=1,size=3,width = 0.2)+
+  scale_fill_manual(values = c("CTRL-AML" = "firebrick3", "STAG2-AML" = "seagreen2", "RAD21-AML" = "plum1")) +
+  scale_color_manual(values = c("CTRL-AML" = "firebrick1", "STAG2-AML" = "seagreen3", "RAD21-AML" = "plum3")) +
+  scale_x_discrete(labels=c("CTRL\nAML","RAD21\nmut")) +
+  xlab("") + ylab("Actin-normalized \n STAG1 levels") +
+  annotate("text", x=1.5, y=max(individRAD$Average_STAG1_Actin,na.rm=TRUE)+0.3, label= "P<0.06", size=6, fontface="italic") +
+  annotate("segment", x = 1, xend = 2, y = max(individRAD$Average_STAG1_Actin,na.rm=TRUE)+0.1, yend = max(STAG1normdata$Average_STAG1_Actin,na.rm=TRUE)+0.1)+
+   theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=12),
+  axis.title=element_text(size=12,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="none",
+  axis.line = element_line(colour = "black"),)
+#export plot
+ggsave(bplotSA1_SA2mut,file=file.path(WORKDIR,"Barplot_CTRLvsSTAG2mut_Average_STAG1_Actin.posthoc_tukey.pdf"), width = 3, height = 3)
+ggsave(bplotSA1_RAD21mut,file=file.path(WORKDIR,"Barplot_CTRLvsRAD21mut_Average_STAG1_Actin.posthoc_tukey.pdf"), width = 3, height = 3)
+```
+
+
+
+# STAG2 actin normalization - for RAD21-mut only
+## prepare data tables
+```{r}
+#read in csv files
+STAG2normdata<-read.csv(file.path(WORKDIR,"AML_STAG2_actinnorm_WB.csv"))
+colnames(STAG2normdata)[1]<-"VialID"
+#define group vectors
+STAG2normdata$group<-factor(STAG2normdata$group,levels=c("CTRL-AML","RAD21-AML"))
+group2<-STAG2normdata$group
+row.names(STAG2normdata)<-STAG2normdata$PatID
+##get mean and sd by group
+# Convert your data.frame to data.table
+STAG2normdata <- as.data.table(STAG2normdata)
+# Calculate mean and sd for each group
+mean.dat2 <- STAG2normdata[, .(mean = mean(as.numeric(STAG2_Actin), na.rm = TRUE),
+                        sd = sd(as.numeric(STAG2_Actin), na.rm = TRUE)),
+                    by = group]
+mean.dat2
+
+STAG2normdata<-as.data.frame(STAG2normdata)
+mean.dat2<-as.data.frame(mean.dat2)
+```
+
+## test for normal distribution  using histograms and shapiro test
+```{r}
+#check  for combined set
+shapSTAG2<-shapiro.test(as.numeric(STAG2normdata$STAG2_Actin)) 
+shapSTAG2#W = 0.90421, p-value = 0.1298 #likely normally distributed!
+pdf(file=file.path(WORKDIR,paste0("Hist.Average_STAG2_Actin.comb.pdf")))
+hist(STAG2normdata[,"STAG2_Actin"], main=paste0("Average_STAG2_Actin in complete set"),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shapSTAG1[2]," ",shapSTAG1[1]), side=3)
+dev.off()
+
+pdf(file=file.path(WORKDIR,paste0("Q-Qplot.Average_STAG2_Actin.comb.pdf")))
+qqnorm(STAG2normdata$STAG2_Actin)
+qqline(STAG2normdata$STAG2_Actin)
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shapSTAG2[2]," ",shapSTAG2[1]), side=3)
+dev.off()
+```
+
+## parametric testing
+```{r}
+#One-way  ANVOVA: general testing for significant differences of groups for each CFU cat
+anova_resultSA2 <- aov(STAG2_Actin ~ group, data = STAG2normdata)
+summary(anova_resultSA2)
+#            Df Sum Sq Mean Sq F value  Pr(>F)   
+#group        1  3.823   3.823   6.133 0.0291 *
+
+#Post-hoc Tests: pvalues for the individual comparisons
+posthoc_tukeySA2 <- TukeyHSD(anova_resultSA2)
+posthoc_tukeySA2
+#                         diff       lwr       upr     p adj
+#RAD21-AML-CTRL-AML -1.090526 -2.050004 -0.131048 0.0291497
+
+#t-tests
+t_test_result_RADvsCTRL_STAG2 <- t.test(STAG2_Actin ~ group, data = STAG2normdata,
+                        subset = group %in% c("RAD21-AML", "CTRL-AML"))
+t_test_result_RADvsCTRL_STAG2
+##t = 3.054, df = 11.689, p-value = 0.01029
+```
+
+## show adj. p-value (ttest) significance level
+```{r}
+##plot barplots with replicates as dots
+bplotSA2_RAD21mut<-ggplot(mean.dat2, aes(group, mean,fill=group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.6) +
+  geom_errorbar(data=mean.dat2,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = STAG2normdata, aes(x=group,y=STAG2_Actin,fill=group,color=group),alpha=1,size=3,width = 0.2)+
+  scale_fill_manual(values = c("CTRL-AML" = "firebrick3", "STAG2-AML" = "seagreen2", "RAD21-AML" = "plum1")) +
+  scale_color_manual(values = c("CTRL-AML" = "firebrick1", "STAG2-AML" = "seagreen3", "RAD21-AML" = "plum3")) +
+  scale_x_discrete(labels=c("CTRL\nAML","RAD21\nmut")) +
+  xlab("") + ylab("Actin-normalized \n STAG2 levels") +
+  annotate("text", x=1.5, y=max(STAG2normdata$STAG2_Actin,na.rm=TRUE)+0.3, label= "P<0.03", size=6, fontface="italic") +
+  annotate("segment", x = 1, xend = 2, y = max(STAG2normdata$STAG2_Actin,na.rm=TRUE)+0.1, yend = max(STAG2normdata$STAG2_Actin,na.rm=TRUE)+0.1)+
+   theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=12),
+  axis.title=element_text(size=12,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="none",
+  axis.line = element_line(colour = "black"),)
+#export plot
+ggsave(bplotSA2_RAD21mut,file=file.path(WORKDIR,"Barplot_CTRLvsRAD21mut_Average_STAG2_Actin.posthoc_tukey.pdf"), width = 3, height = 3)
+```

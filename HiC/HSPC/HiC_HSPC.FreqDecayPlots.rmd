@@ -1,0 +1,95 @@
+---
+title: "PE tag frequency distribution Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+
+
+## load libraries and set directories
+```{r}
+#libraries
+library(reshape2)
+library(ggplot2)
+#paths
+DIRDATA="/misc/data/"
+WORKDIR=file.path(DIRDATA,"analysis/project_cohesin/CD34/HiC_KDs/DeepSeq_Analysis")
+FIGURESDIR=file.path(WORKDIR,"figures")
+TAGDIR=file.path(DIRDATA,"processedData/tagDir/3Dchromatin/HiC/GRCh38/CD34")
+
+#sample names TAGDIRECTORIES
+HIC_CTRL<-c("HiC_CD34_14_3_siCtrl", "HiC_CD34_17_3_siCtrl", "HiC_CD34_18_4_siCtrl", "HiC_CD34_20_6_siCtrl_Rep1", "HiC_CD34_21_4_siCtrl_Rep1", "HiC_CD34_22_3_siCtrl", "HiC_CD34_27_4_siCtrl", "HiC_CD34_28_6_siCtrl")
+HIC_SA1KD<-c("HiC_CD34_14_1_SA1_KD", "HiC_CD34_17_1_SA1_KD", "HiC_CD34_20_4_SA1_KD", "HiC_CD34_21_2_SA1_KD", "HiC_CD34_27_3_SA1_KD", "HiC_CD34_28_4_SA1_KD")
+HIC_SA2KD<-c("HiC_CD34_14_2_SA2_KD", "HiC_CD34_17_2_SA2_KD", "HiC_CD34_20_5_SA2_KD", "HiC_CD34_21_3_SA2_KD", "HiC_CD34_22_2_SA2_KD", "HiC_CD34_28_5_SA2_KD")
+HIC_RAD21KD<-c("HiC_CD34_18_1_RAD21_KD", "HiC_CD34_20_1_RAD21_KD", "HiC_CD34_22_1_RAD21_KD", "HiC_CD34_27_1_RAD21_KD", "HiC_CD34_28_1_RAD21_KD")
+
+#regular sample names and metadata
+metadata<- read.table(file.path(WORKDIR,"KDsvsCTRLmeta.csv"), header=T, sep=",")
+metadata$tagdirID<-c(HIC_CTRL,HIC_SA1KD,HIC_SA2KD,HIC_RAD21KD)
+metadata[metadata$group=="RAD21","group"]<-"RAD21KD"
+```
+
+
+## get petag.FreqDistribution_1000 data
+```{r}
+#get one dataset for rownames
+data <- read.table(file.path(TAGDIR,paste0("HiC_CD34_20_1_RAD21_KD_filtered/petag.FreqDistribution_1000.txt")), header=T, sep="\t", stringsAsFactors=FALSE, check.names = FALSE)
+distfreqdf<-data.frame(row.names=data[,1])
+#read in all datasets for frequencies
+for (tagdir in metadata$tagdirID){
+data <- read.table(file.path(TAGDIR,paste0(tagdir,"_filtered/petag.FreqDistribution_1000.txt")), header=T, sep="\t", stringsAsFactors=FALSE, check.names = FALSE)
+distfreqdf[,paste0(tagdir,"_freq")]<-data[,2]
+}
+colnames(distfreqdf)<-metadata$X...Sample
+
+distfreqdf$dist<-as.numeric(as.character(row.names(distfreqdf)))
+write.table(distfreqdf,file=file.path(FIGURESDIR,"HSPCs_frequency.distance.txt"),sep="\t",quote=FALSE)
+
+##log 10
+logdata <- log10(distfreqdf)
+logdata <- logdata[is.finite(rowSums(logdata)),]
+#spline the curves
+splinedf<-data.frame(row.names=logdata$dist)
+for (pat in metadata$X...Sample){
+splinedf[,pat]<-smooth.spline(logdata$dist,logdata[,pat], spar=0.75)[["y"]]
+}
+logdist<-smooth.spline(logdata$dist,logdata[,pat], spar=0.75)[["x"]]
+```
+
+## stack and plot data including mean of CTRL line
+```{r}
+#stack data
+dat.st<-stack(as.data.frame(splinedf))   ##stack data to a single column
+dat.st$dist<- rep(logdist, times = ncol(splinedf))  ##add genenames as extra col
+dat.st$type=rep(metadata$group, each=length(splinedf[,1]))    ##add group identity as extra col
+dat.st$type<-factor(dat.st$type,levels=c("CTRL","SA2KD","SA1KD","RAD21KD"))
+
+
+#plot all in one and facet by mutation group
+allin1<-ggplot(dat.st,aes(x=dist,y=values, group=ind))+
+geom_line(aes(color=type))+
+scale_color_manual(values=c("CTRL"="firebrick1","SA2KD"="lightgreen","SA1KD"="darkgoldenrod3","RAD21KD"="violet"))+
+theme_classic()+xlim(3,9)+ylim(-7,-1)+
+xlab("log10 distance")+ylab("log10 frequency")+facet_wrap(~type, ncol = 5)
+
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allKD.png"),height=6,width=20)
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allKD.pdf"),height=6,width=20)
+
+##add a line representing the average of the controls to each facet
+###ctrl average curve
+splinedf2<-splinedf
+splinedf2$meanCTRL<-rowMeans(splinedf2[,c(1:8)])
+splinedf2$logdist<-logdist
+splinedf2$ind<-"CTRLaverage"
+ctrav<-splinedf2[,c("logdist","meanCTRL")]
+
+allin1<-ggplot(dat.st,aes(x=dist,y=values))+
+geom_line(aes(color=type, group=ind))+
+scale_color_manual(values=c("CTRL"="firebrick1","SA2KD"="lightgreen","SA1KD"="darkgoldenrod3","RAD21KD"="violet"))+
+theme_classic()+xlim(3,9)+ylim(-7,-1)+
+annotate(geom="line",x=ctrav$logdist,y=ctrav$meanCTRL,color="black",linetype = "longdash")+
+theme(axis.text=element_text(size=rel(2)),axis.title=element_text(size=rel(2)))+theme(strip.background = element_blank(), strip.text = element_blank())+
+xlab("log10 distance")+ylab("log10 frequency")+facet_wrap(~type, ncol = 5)
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allKD.vs.CTRLaverage.png"),height=6,width=20)
+ggsave(allin1,file=file.path(FIGURESDIR,"freqdecay.allKD.vs.CTRLaverage.pdf"),height=6,width=20)
+```

@@ -1,0 +1,268 @@
+---
+title: "Diff Loop Anchor stats in Cohesin-mutant AML"
+author: "Alexander Fischer"
+output: html_document
+---
+
+# set paths and load libraries
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/HiC")
+FIGURESDIR=file.path(WORKDIR,"figures/Loopstats")
+LOOPDIR=file.path(WORKDIR,"loops")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+library(ggplot2)
+library(reshape2)
+```
+
+# Define variables
+```{r}
+MUTs<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+anchorcategories<-c("CohesinAssEnhancers.CTCF",
+"CohesinAssEnhancers.wo.CTCF",
+"wo.CohesinAssEnhancers.RAD21.CTCF",
+"wo.CohesinAssEnhancers.RAD21.woCTCF",
+"wo.CohesinAssEnhancers.wo.RAD21.CTCF",
+"wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac",
+"wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac")
+```
+
+# General summary of loop anchors by ChIP feature overlap
+## read in the Anchor-ChIP-peak overlap bedfiles and count the entries by category
+```{r}
+loopstatslist<-vector(mode = "list", length = 0)
+for (MUT in MUTs) {
+loopstatslist[[MUT]]<-data.frame()
+for (cat in anchorcategories) {
+  for (FILT in Filts){
+path<-file.path(diffanchorsn2t,"H3K27overlap",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT, ".",cat,".Overlap.bed"))
+info <- file.info(path)
+if (info$size == 0L) { #check if file if empty 
+loopstatslist[[MUT]][cat,FILT]<-0 #add a 0 count for empty files
+} else {
+loopstatslist[[MUT]][cat,FILT]<-nrow(read.table(path, header=F, sep="\t")) #add count for proper files
+}
+}}}
+```
+
+## STACKED BARPLOTS
+```{r}
+plotlist<-vector(mode = "list", length = 0)
+for (MUT in MUTs) {
+df <- loopstatslist[[MUT]]
+df$categories <- row.names(df)
+data.m <- melt(df, id.vars="categories")
+write.table(data.m,file=file.path(FIGURESDIR,paste0(MUT,"diffloopAnchorFeatures.txt")),sep="\t",row.names=FALSE,quote=FALSE)
+# Create a stacked barplot with absolute numbers
+p1<-ggplot(data.m , aes(x = variable, y = value, fill = categories)) +
+    geom_bar(stat = "identity",position="stack") +
+    scale_fill_manual(values = c("CohesinAssEnhancers.CTCF" = "#a69f1a", "CohesinAssEnhancers.wo.CTCF" = "#ffee03",
+    "wo.CohesinAssEnhancers.RAD21.CTCF" = "#9c2a85", "wo.CohesinAssEnhancers.RAD21.woCTCF"= "#dd23b8", "wo.CohesinAssEnhancers.wo.RAD21.CTCF"= "#1411dc",
+    "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac"= "#a4d833", "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac"= "#aaaaa1"),
+    labels=c("Cohesin E/P + CTCF", "Cohesin E/P", "Cohesin + CTCF", "Cohesin", "CTCF", "E/P", "other")) + 
+    xlab(" ") + ylab("number of loop anchors") +
+    ggtitle(paste0("Differential loop anchors in ", MUT)) +
+    theme_classic() +
+    theme(axis.title=element_text(size=20,face="bold"),axis.text.x = element_text(size=15),axis.text.y = element_text(size=15),
+    legend.text=element_text(size=15))
+ggsave(file.path(FIGURESDIR,paste0(MUT,"diffloopAnchorFeatures.pdf")), plot=p1) #directly save to pdf
+plotlist[[paste0(MUT,".abs")]]<-p1 #also store in list so it can be plotted in grid later
+# Create a stacked barplot with propotions 
+p2<-ggplot(data.m , aes(x = variable, y = value, fill = categories)) +
+    geom_col(position="fill") +
+    scale_fill_manual(values = c("CohesinAssEnhancers.CTCF" = "#a69f1a", "CohesinAssEnhancers.wo.CTCF" = "#ffee03",
+    "wo.CohesinAssEnhancers.RAD21.CTCF" = "#9c2a85", "wo.CohesinAssEnhancers.RAD21.woCTCF"= "#dd23b8", "wo.CohesinAssEnhancers.wo.RAD21.CTCF"= "#1411dc",
+    "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac"= "#a4d833", "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac"= "#aaaaa1"),
+    labels=c("Cohesin E/P + CTCF", "Cohesin E/P", "Cohesin + CTCF", "Cohesin", "CTCF", "E/P", "other")) + 
+    xlab(" ") + ylab("proportion of loop anchors") +
+    ggtitle(paste0("Differential loop anchors in ", MUT)) +
+    theme_classic() +
+    theme(axis.title=element_text(size=20,face="bold"),axis.text.x = element_text(size=15),axis.text.y = element_text(size=15),
+    legend.text=element_text(size=15))
+ggsave(file.path(FIGURESDIR,paste0(MUT,"diffloopAnchorFeatures.proportions.pdf")), plot=p2)
+plotlist[[paste0(MUT,".perc")]]<-p2
+}
+```
+
+## Combine STACKED BARPLOTS for STAG2-mut and RAD21-mut in grid
+```{r}
+library(cowplot)
+pdf(file = file.path(file.path(FIGURESDIR,"SA2RAD21.diffloopAnchorFeatures.absolute.pdf")),height = 6,width = 14)
+plot_grid(plotlist =list(plotlist[["SA2mut.abs"]],plotlist[["RAD21mut.abs"]]),ncol=2)
+dev.off()
+pdf(file = file.path(file.path(FIGURESDIR,"SA2RAD21.diffloopAnchorFeatures.proportions.pdf")),height = 6,width = 14)
+plot_grid(plotlist =list(plotlist[["SA2mut.perc"]],plotlist[["RAD21mut.perc"]]),ncol=2)
+dev.off()
+```
+
+
+#  Define loop Anchor pairs by H3K27ac overlap on both (="paired") or one (="unpaired") of the anchors
+## read in  bed files into list
+```{r}
+
+loopstatsbed<-vector(mode = "list", length = 0)
+for (MUT in MUTs) {
+  for (FILT in Filts){
+#loop anchors
+path<-file.path(diffanchorsn2t,paste0(MUT,"vsCTRL.loopAnchors.red.", FILT, "sig.n2t.bed")) #set path
+loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE) #make separate rows in case of same anchors used for different lopps
+i<-c(1:nrow(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]]))
+loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]]$Loopname[i]<-sapply(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]]$V4[i],function(x) strsplit(as.character(x), "_")[[1]][1]) #create separate loopname column wihtout the _plus or _minus suffix
+loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT,"_plus")]]<-as.data.frame(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]])$V6=="+",]#separate list of plus-anchors
+loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT,"_minus")]]<-as.data.frame(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT)]])$V6=="-",]#separate list of minus-anchors
+  }
+}
+#add AnchorChIPoverlaps
+cats1=c("CTCFover","RAD21over","MED12over")
+#loop anchors with ChIPseq peaks
+for (MUT in MUTs) {
+  for (FILT in Filts){
+   for (cat in cats1){
+path<-file.path(diffanchorsn2t,"AnchorChIPoverlap",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT, ".n2t.",cat,".bed"))
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t")
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE) #make separate rows in case of same anchors used for different lopps
+i<-c(1:nrow(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]))
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]$Loopname[i]<-sapply(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]$V4[i],function(x) strsplit(as.character(x), "_")[[1]][1]) #create separate loopname column wihtout the _plus or _minus suffix
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]<-as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])$V6=="+",]#separate list of plus-anchors
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]<-as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])$V6=="-",]#separate list of minus-anchors
+  }
+}
+}
+#double overlaps
+cats2=c("RAD21andCTCF","CTCFwoRAD21")
+for (MUT in MUTs) {
+  for (FILT in Filts){
+   for (cat in cats2){
+path<-file.path(diffanchorsn2t,"AnchorChIPoverlap",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT,".",cat,".overlap.bed"))
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t")
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE) #make separate rows in case of same anchors used for different lopps
+i<-c(1:nrow(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]))
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]$Loopname[i]<-sapply(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]$V4[i],function(x) strsplit(as.character(x), "_")[[1]][1]) #create separate loopname column wihtout the _plus or _minus suffix
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]<-as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])$V6=="+",]#separate list of plus-anchors
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]<-as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])$V6=="-",]#separate list of minus-anchors
+  }}}
+#Enhancers at loop anchors
+cats3=c("H3K27acOverlap","CohesinAssEnhancers.Overlap","CohesinAssEnhancersCTCF.overlap")
+for (MUT in MUTs) {
+  for (FILT in Filts){
+   for (cat in cats3){
+path<-file.path(diffanchorsn2t,"H3K27overlap",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT,".",cat,".bed"))
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t")
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE) #make separate rows in case of same anchors used for different lopps
+i<-c(1:nrow(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]))
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]$Loopname[i]<-sapply(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]]$V4[i],function(x) strsplit(as.character(x), "_")[[1]][1]) #create separate loopname column wihtout the _plus or _minus suffix
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]<-as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])$V6=="+",]#separate list of plus-anchors
+loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]<-as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])[as.data.frame(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT)]])$V6=="-",]#separate list of minus-anchors
+  }}}
+#updown overlap ambigous anchors
+for (MUT in MUTs) {
+path<-file.path(diffanchorsn2t,paste0(MUT,"vsCTRL.loopAnchors.overlap.FC1.n2t.bed"))
+loopstatsbed[[paste0("UpdownOverlap_",MUT)]]<-read.table(path, header=F, sep="\t")
+loopstatsbed[[paste0("UpdownOverlap_",MUT)]]<-tidyr::separate_rows(loopstatsbed[[paste0("UpdownOverlap_",MUT)]],V4,sep=",",convert=FALSE)
+i<-c(1:nrow(loopstatsbed[[paste0("UpdownOverlap_",MUT)]]))
+loopstatsbed[[paste0("UpdownOverlap_",MUT)]]$Loopname[i]<-sapply(loopstatsbed[[paste0("UpdownOverlap_",MUT)]]$V4[i],function(x) strsplit(as.character(x), "_")[[1]][1]) #create separate loopname column wihtout the _plus or _minus suffix
+loopstatsbed[[paste0("UpdownOverlap_",MUT,"_plus")]]<-as.data.frame(loopstatsbed[[paste0("UpdownOverlap_",MUT)]])[as.data.frame(loopstatsbed[[paste0("UpdownOverlap_",MUT)]])$V6=="+",]#separate list of plus-anchors
+loopstatsbed[[paste0("UpdownOverlap_",MUT,"_minus")]]<-as.data.frame(loopstatsbed[[paste0("UpdownOverlap_",MUT)]])[as.data.frame(loopstatsbed[[paste0("UpdownOverlap_",MUT)]])$V6=="-",]#separate list of minus-anchors
+}
+```
+
+
+# create new pairs of files (+/-) for paired loop anchors (for the different feature overlap categories)
+```{r}
+##dir.create(file.path(diffanchorsn2t,"AnchorsOverlapPairs"))
+allcat=c("totalDiffAnchors",cats1,cats2,cats3)
+for (cat in allcat) {
+for (MUT in MUTs) {
+  for (FILT in Filts){
+plusAnchorspaired<-subset(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]],loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]$Loopname %in% loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]$Loopname)
+minusAnchorspaired<-subset(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]],loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]$Loopname %in% loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]$Loopname)
+bedplus <- plusAnchorspaired[,c('V1', 'V2', 'V3', 'Loopname','V5','V6')]
+colnames(bedplus) <- c('chrom', 'chromStart', 'chromEnd', 'Loopname','score','strand')
+write.table(bedplus, file.path(diffanchorsn2t,"AnchorsOverlapPairs",paste0(cat,"_",FILT,"_anchors_",MUT,"_paired_plus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+bedminus <- minusAnchorspaired[,c('V1', 'V2', 'V3', 'Loopname','V5','V6')]
+colnames(bedminus) <- c('chrom', 'chromStart', 'chromEnd', 'Loopname','score','strand')
+write.table(bedminus, file.path(diffanchorsn2t,"AnchorsOverlapPairs",paste0(cat,"_",FILT,"_anchors_",MUT,"_paired_minus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}}
+```
+
+# for H3K27ac anchors: also create pairs of files (+/-) for pairs where only one of the anchors has the enhancer/promoter mark
+```{r}
+cat<-"H3K27acOverlap"
+for (MUT in MUTs) {
+  for (FILT in Filts){
+#for "unpaired" plus anchors with H3K27ac
+unpaired_plus<-subset(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]],!(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]$Loopname %in% loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]$Loopname)) #252
+unpaired_plus_minus<-subset(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT,"_minus")]],loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT,"_minus")]]$Loopname %in% unpaired_plus$Loopname) #238 --> some are missing?
+unpaired_plus_minus_missing<-subset(unpaired_plus,!(unpaired_plus$Loopname %in% unpaired_plus_minus$Loopname)) #14 ##they are in the ambigous up-down fraction?
+unpaired_plus_minus_missing_check<-subset(loopstatsbed[[paste0("UpdownOverlap_",MUT,"_minus")]], loopstatsbed[[paste0("UpdownOverlap_",MUT,"_minus")]]$Loopname %in%  unpaired_plus_minus_missing$Loopname) #14
+unpaired_plus_minus_complete<-rbind(unpaired_plus_minus,unpaired_plus_minus_missing_check)###add the missing ones to have a complete list of partners
+sorted_unpaired_plus_minus<-unpaired_plus_minus_complete[match(unpaired_plus$Loopname, unpaired_plus_minus_complete$Loopname),] #sort the complete minus anchors to order of unpaired plus
+bedplus <- unpaired_plus[,c('V1', 'V2', 'V3', 'Loopname','V5','V6')]
+write.table(bedplus, file.path(diffanchorsn2t,"AnchorsOverlapPairs",paste0(cat,"_",FILT,"_anchors_",MUT,"_unpairedPLUS_plus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+bedminus <- sorted_unpaired_plus_minus[,c('V1', 'V2', 'V3', 'Loopname','V5','V6')]
+write.table(bedminus, file.path(diffanchorsn2t,"AnchorsOverlapPairs",paste0(cat,"_",FILT,"_anchors_",MUT,"_unpairedPLUS_minus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+
+#for "unpaired" minus anchors with H3K27ac
+unpaired_minus<-subset(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]],!(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]$Loopname %in% loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]$Loopname)) #248
+unpaired_minus_plus<-subset(loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT,"_plus")]],loopstatsbed[[paste0("totalDiffAnchors_",FILT,"_",MUT,"_plus")]]$Loopname %in% unpaired_minus$Loopname) #226 --> some are missing?
+unpaired_minus_plus_missing<-subset(unpaired_minus,!(unpaired_minus$Loopname %in% unpaired_minus_plus$Loopname)) #22
+unpaired_minus_plus_missing_check<-subset(loopstatsbed[[paste0("UpdownOverlap_",MUT,"_plus")]], loopstatsbed[[paste0("UpdownOverlap_",MUT,"_plus")]]$Loopname %in%  unpaired_minus_plus_missing$Loopname) #22
+unpaired_minus_plus_complete<-rbind(unpaired_minus_plus,unpaired_minus_plus_missing_check)###add the missing ones to have a complete list of partners
+sorted_unpaired_minus_plus<-unpaired_minus_plus_complete[match(unpaired_minus$Loopname, unpaired_minus_plus_complete$Loopname),] #sort the complete minus anchors to order of unpaired plus
+bedplus <- sorted_unpaired_minus_plus[,c('V1', 'V2', 'V3', 'Loopname','V5','V6')]
+write.table(bedplus, file.path(diffanchorsn2t,"AnchorsOverlapPairs",paste0(cat,"_",FILT,"_anchors_",MUT,"_unpairedMINUS_plus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+bedminus <- unpaired_minus[,c('V1', 'V2', 'V3', 'Loopname','V5','V6')]
+write.table(bedminus, file.path(diffanchorsn2t,"AnchorsOverlapPairs",paste0(cat,"_",FILT,"_anchors_",MUT,"_unpairedMINUS_minus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}
+```
+
+
+# Statistics for paired vs unpaired loop anchors
+```{r}
+#number of paired and unpaired loopanchors by set in dataframe for stats to plot
+
+pairedloopstats<-data.frame()
+for (cat in allcat) {
+for (MUT in MUTs) {
+  for (FILT in Filts){
+pairedloopstats[paste0(cat,"_",FILT),paste0(MUT,".paired")]<-nrow(subset(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]],loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]$Loopname %in% loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]$Loopname))
+pairedloopstats[paste0(cat,"_",FILT),paste0(MUT,".unpaired")]<-nrow(subset(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]],!(loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_plus")]]$Loopname %in% loopstatsbed[[paste0(cat,"_",FILT,"_",MUT,"_minus")]]$Loopname)))
+}}}
+#transform dataframe and relevel to desired order in plot
+data.m2 <- melt(as.matrix(pairedloopstats), id.vars=rownames(pairedloopstats))
+colnames(data.m2)<-c("feature","conditiontype","value")
+i<-c(1:nrow(data.m2))
+data.m2$group[i]<-sapply(data.m2$conditiontype[i],function(x) strsplit(as.character(x), "\\.")[[1]][1])
+data.m2$type[i]<-sapply(data.m2$conditiontype[i],function(x) strsplit(as.character(x), "\\.")[[1]][2])
+data.m2$direction[i]<-sapply(data.m2$feature[i],function(x) strsplit(as.character(x), "_")[[1]][2])
+data.m2$group <- factor(data.m2$group , levels = c("SA2mut","RAD21mut"))
+data.m2$conditiontype <- factor(data.m2$conditiontype , levels = c("SA2mut.paired","SA2mut.unpaired","RAD21mut.paired","RAD21mut.unpaired"))
+data.m2$feature <- factor(data.m2$feature , levels = c("totalDiffAnchors_up.FC1","CTCFover_up.FC1","RAD21over_up.FC1","RAD21andCTCF_up.FC1","CTCFwoRAD21_up.FC1","MED12over_up.FC1","H3K27acOverlap_up.FC1","CohesinAssEnhancers.Overlap_up.FC1","CohesinAssEnhancersCTCF.overlap_up.FC1","totalDiffAnchors_down.FC1","CTCFover_down.FC1","RAD21over_down.FC1","RAD21andCTCF_down.FC1","CTCFwoRAD21_down.FC1","MED12over_down.FC1","H3K27acOverlap_down.FC1","CohesinAssEnhancers.Overlap_down.FC1","CohesinAssEnhancersCTCF.overlap_down.FC1"))
+
+
+labs<-c("totalDiffAnchors","CTCF","RAD21","RAD21+CTCF","CTCFwoRAD21","MED12","H3K27ac","H3K27ac+RAD21","H3K27ac+RAD21+CTCF")
+
+#create stacked (paired+unpaired) barplot grouped by up/down and Mutation group (using facets)
+
+pdf(file=file.path(diffanchorsn2t,paste0("CohAML",".paired.Diffloop.ChIP.OverlapSummary.pdf")))
+ggplot(data.m2) +
+  geom_bar(aes(feature,value,fill = conditiontype), position = "stack", stat="identity") +
+    facet_wrap(~group+direction,drop=T,nrow=2,scales="free_x") + theme(panel.spacing = unit(1, "lines"))+ 
+    scale_fill_manual(values = c("SA2mut.paired" = "seagreen3","SA2mut.unpaired" = "lightgreen", "RAD21mut.paired" = "mediumvioletred","RAD21mut.unpaired" = "violet")) +
+    scale_x_discrete(labels=labs) +
+    xlab("feature") + ylab("frequency") +
+    ggtitle("paired diff. Loop anchor associated features") +
+    theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 12, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+dev.off() 
+```
+
+

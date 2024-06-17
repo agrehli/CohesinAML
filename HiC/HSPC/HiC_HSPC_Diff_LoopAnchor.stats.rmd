@@ -1,0 +1,133 @@
+---
+title: "Diff Loop stats Cohesin KD in CD34"
+author: "Alexander Fischer"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+WORKDIR_CD34=file.path(DIR_DATA,"analysis/project_cohesin/CD34/HiC_KDs/DeepSeq_Analysis/")
+FIGURESDIR=file.path(WORKDIR_CD34,"figures/Loopstats")
+dir.create(FIGURESDIR)
+LOOPDIR_CD34=file.path(WORKDIR_CD34,"loops")
+diffanchorsn2t=file.path(LOOPDIR_CD34,"differentialanchorsn2t")
+overlapsplitdir=file.path(diffanchorsn2t,"splitbyoverlap")
+library(ggplot2)
+library(reshape2)
+```
+
+
+# Define variables
+```{r}
+KDs<-c("SA2KD","SA1KD","RAD21KD")
+Filts<-c("up.FC1", "down.FC1")
+anchorcategories<-c("CohesinAssEnhancers.CTCF",
+"CohesinAssEnhancers.wo.CTCF",
+"wo.CohesinAssEnhancers.RAD21.CTCF",
+"wo.CohesinAssEnhancers.RAD21.woCTCF",
+"wo.CohesinAssEnhancers.wo.RAD21.CTCF",
+"wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac",
+"wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac")
+```
+
+# read in the bedfiles and count the entries by category
+```{r}
+loopstatslist<-vector(mode = "list", length = 0)
+for (KD in KDs) {
+loopstatslist[[KD]]<-data.frame()
+for (cat in anchorcategories) {
+  for (FILT in Filts){
+path<-file.path(diffanchorsn2t,"H3K27overlap",paste0(KD,"vsCTRL.loopAnchors.red.", FILT, ".",cat,".Overlap.bed"))
+info <- file.info(path)
+if (info$size == 0L) { #check if file if empty 
+loopstatslist[[KD]][cat,FILT]<-0 #add a 0 count for empty files
+} else {
+loopstatslist[[KD]][cat,FILT]<-nrow(read.table(path, header=F, sep="\t")) #add count for proper files
+}
+}}}
+```
+
+
+
+# STACKED BARPLOTS
+```{r}
+
+plotlist<-vector(mode = "list", length = 0)
+#for STAGKDs=c("SA2KD","SA1KD") with same y limit!
+STAGKDs=c("SA2KD","SA1KD")
+for (KD in STAGKDs) {
+df <- loopstatslist[[KD]]
+df$categories <- row.names(df)
+data.m <- melt(df, id.vars="categories")
+write.table(data.m,file=file.path(FIGURESDIR,paste0(KD,"diffloopAnchorFeatures.txt")),sep="\t",row.names=FALSE,quote=FALSE)
+# Create a stacked barplot with absolute numbers
+p1<-ggplot(data.m , aes(x = variable, y = value, fill = categories)) +
+    geom_bar(stat = "identity",position="stack") +
+    scale_fill_manual(values = c("CohesinAssEnhancers.CTCF" = "#a69f1a", "CohesinAssEnhancers.wo.CTCF" = "#ffee03",
+    "wo.CohesinAssEnhancers.RAD21.CTCF" = "#9c2a85", "wo.CohesinAssEnhancers.RAD21.woCTCF"= "#dd23b8", "wo.CohesinAssEnhancers.wo.RAD21.CTCF"= "#1411dc",
+    "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac"= "#a4d833", "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac"= "#aaaaa1"),
+    labels=c("Cohesin E/P + CTCF", "Cohesin E/P", "Cohesin + CTCF", "Cohesin", "CTCF", "E/P", "other")) + 
+    xlab(" ") + ylab("number of loop anchors") + 
+    ggtitle(paste0("Differential loop anchors in ", KD)) + ylim(0,1300) +
+    theme_classic() +
+    theme(axis.title=element_text(size=20,face="bold"),axis.text.x = element_text(size=15),axis.text.y = element_text(size=15),
+    legend.text=element_text(size=15)) 
+ggsave(file.path(FIGURESDIR,paste0(KD,"diffloopAnchorFeatures.pdf")), plot=p1, height = 7,width = 7) #directly save to pdf
+plotlist[[paste0(KD,".abs")]]<-p1 #also store in list so it can be plotted in grid later
+}
+
+
+#For RAD21 KD without y lim
+KD = "RAD21KD"
+df <- loopstatslist[[KD]]
+df$categories <- row.names(df)
+data.m <- melt(df, id.vars="categories")
+# Create a stacked barplot with absolute numbers
+p1<-ggplot(data.m , aes(x = variable, y = value, fill = categories)) +
+    geom_bar(stat = "identity",position="stack") +
+    scale_fill_manual(values = c("CohesinAssEnhancers.CTCF" = "#a69f1a", "CohesinAssEnhancers.wo.CTCF" = "#ffee03",
+    "wo.CohesinAssEnhancers.RAD21.CTCF" = "#9c2a85", "wo.CohesinAssEnhancers.RAD21.woCTCF"= "#dd23b8", "wo.CohesinAssEnhancers.wo.RAD21.CTCF"= "#1411dc",
+    "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac"= "#a4d833", "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac"= "#aaaaa1"),
+    labels=c("Cohesin E/P + CTCF", "Cohesin E/P", "Cohesin + CTCF", "Cohesin", "CTCF", "E/P", "other")) + 
+    xlab(" ") + ylab("number of loop anchors") +
+    ggtitle(paste0("Differential loop anchors in ", KD)) +
+    theme_classic() +
+    theme(axis.title=element_text(size=20,face="bold"),axis.text.x = element_text(size=15),axis.text.y = element_text(size=15),
+    legend.text=element_text(size=15)) 
+ggsave(file.path(FIGURESDIR,paste0(KD,"diffloopAnchorFeatures.pdf")), plot=p1, height = 7,width = 7) #directly save to pdf
+plotlist[[paste0(KD,".abs")]]<-p1 #also store in list so it can be plotted in grid later
+
+
+# Create a stacked barplot with propotions ; same for all 3 KDs
+for (KD in KDs) {
+df <- loopstatslist[[KD]]
+df$categories <- row.names(df)
+data.m <- melt(df, id.vars="categories")
+p2<-ggplot(data.m , aes(x = variable, y = value, fill = categories)) +
+    geom_col(position="fill") +
+    scale_fill_manual(values = c("CohesinAssEnhancers.CTCF" = "#a69f1a", "CohesinAssEnhancers.wo.CTCF" = "#ffee03",
+    "wo.CohesinAssEnhancers.RAD21.CTCF" = "#9c2a85", "wo.CohesinAssEnhancers.RAD21.woCTCF"= "#dd23b8", "wo.CohesinAssEnhancers.wo.RAD21.CTCF"= "#1411dc",
+    "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.H3K27ac"= "#a4d833", "wo.CohesinAssEnhancers.wo.RAD21.woCTCF.woH3K27ac"= "#aaaaa1"),
+    labels=c("Cohesin E/P + CTCF", "Cohesin E/P", "Cohesin + CTCF", "Cohesin", "CTCF", "E/P", "other")) + 
+    xlab(" ") + ylab("proportion of loop anchors") +
+    ggtitle(paste0("Differential loop anchors in ", KD)) +
+    theme_classic() +
+    theme(axis.title=element_text(size=20,face="bold"),axis.text.x = element_text(size=15),axis.text.y = element_text(size=15),
+    legend.text=element_text(size=15))
+ggsave(file.path(FIGURESDIR,paste0(KD,"diffloopAnchorFeatures.proportions.pdf")), plot=p2, height = 7,width = 7)
+plotlist[[paste0(KD,".perc")]]<-p2
+}
+```
+
+
+
+# STACKED BARPLOTS for all KDs in grid
+```{r}
+library(cowplot)
+pdf(file = file.path(file.path(FIGURESDIR,"SA2SA1RAD21.diffloopAnchorFeatures.absolute.pdf")),height = 6,width = 21)
+plot_grid(plotlist =list(plotlist[["SA2KD.abs"]],plotlist[["SA1KD.abs"]],plotlist[["RAD21KD.abs"]]),ncol=3)
+dev.off()
+pdf(file = file.path(file.path(FIGURESDIR,"SA2SA1RAD21.diffloopAnchorFeatures.proportions.pdf")),height = 6,width = 21)
+plot_grid(plotlist =list(plotlist[["SA2KD.perc"]],plotlist[["SA1KD.perc"]],plotlist[["RAD21KD.perc"]]),ncol=3)
+dev.off()
+```

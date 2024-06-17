@@ -1,0 +1,275 @@
+---
+title: "Cohesin KD cell number expansion Analysis in CD34 HSPCs d4"
+author: "Alexander Fischer"
+date: "Oct 2022"
+output: html_document
+---
+
+#rbioc_3-12
+# set paths and load libraries
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+PROJDIR=file.path(DIR_DATA,"analysis/project_cohesin/CD34")
+WORKDIR=file.path(PROJDIR,"KD_expansion_stats")
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+library(rstatix)
+library(plyr)
+```
+
+# prepare data tables
+```{r}
+#read in csv file
+Expdata<-read.csv(file.path(WORKDIR,"siRNA_expansion.csv"))
+row.names(Expdata)<-Expdata$X... 
+colnames(Expdata)[1]<-"Sample"
+
+#remove MED12KDdata
+Expdata<-subset(Expdata,group != "MED12KD")
+#more exact distinction of ctrl types:
+Expdata$group2<-Expdata$group
+Expdata$group2[Expdata$group_detail=="Mock"]<-"MOCK"
+Expdata$group2[Expdata$group_detail=="Untreated"]<-"UNTR"
+#label ID for plots
+Expdata$labelID<-paste0(Expdata$group2,"_",Expdata$donor)
+Expdata$labelIDdetailed<-paste0(Expdata$group_detail,"_",Expdata$donor)
+
+#define group vector
+group<-factor(Expdata$group,levels=c("CTRL","STAG2KD","STAG1KD","STAG1_2KD","RAD21KD"))
+group2<-factor(Expdata$group2,levels=c("CTRL","MOCK","UNTR","STAG2KD","STAG1KD","STAG1_2KD","RAD21KD"))
+#calculate Expansion between split timepoints
+Expdata[,"d0_4_expansion"]<-Expdata[,"d4_living"]/Expdata[,"d0"]
+
+
+#transpose
+Expdatatr<-data.frame(t(Expdata))
+
+#means by condition
+##stack data and add CFU category as well as group in each row
+dat.st<-stack(as.data.frame(Expdatatr[c("d0_4_expansion"),]))   ##stack data to a single column can be used for geom_jitter points
+dat.st$perc<- rep(c("d0_4_expansion"), times = ncol(Expdatatr))  ##add timpoints as extra col
+dat.st$group=rep(group, each=2)   ##add group identity as extra col
+dat.st$group2=rep(group2, each=2)
+dat.st$labelID=rep(Expdata$labelID, each=2)  
+dat.st$values<-as.numeric(dat.st$values)
+
+##calculate mean values and standard dev. all controls combined
+mean.dat<-ddply(dat.st, .(group,perc),
+summarize,
+mean= mean(as.numeric(values),2),
+sd=sd(as.numeric(values))
+)
+mean.dat
+
+##calculate mean values and standard dev. control subsets
+mean.dat2<-ddply(dat.st, .(group2,perc),
+summarize,
+mean= mean(as.numeric(values),2),
+sd=sd(as.numeric(values))
+)
+mean.dat2
+
+#set levels to desired order in plots
+mean.dat$group <- factor(mean.dat$group , levels = c("CTRL","STAG2KD","STAG1KD","STAG1_2KD","RAD21KD"))
+mean.dat2$group2 <- factor(mean.dat2$group2 , levels = c("CTRL","MOCK","UNTR","STAG2KD","STAG1KD","STAG1_2KD","RAD21KD"))
+dat.st$group <- factor(dat.st$group , levels = c("CTRL","STAG2KD","STAG1KD","STAG1_2KD","RAD21KD"))
+
+```
+
+# test for normal distribution  using histograms and shapiro test
+```{r}
+sets=c("d0_4_expansion")
+for (exp in sets){ 
+pdf(file=file.path(WORKDIR,paste0("Hist.",exp,".pdf")))
+for (grp in levels(dat.st$group)){ 
+shap<-shapiro.test(subset(dat.st,perc==exp & group==grp)[,"values"])
+hist(subset(dat.st,perc==exp & group==grp)[,"values"], main=paste0(exp," in ",grp),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shap[2]," ",shap[1]), side=3)
+}
+dev.off()
+}
+###some sets are not normally distributed
+```
+
+
+# non-parametric testing using kruskal - wallis test followed by pairwise wilcoxon tests with adjustment
+## combined controls
+```{r}
+#general testing for significant differences of groups for each CFU cat
+kruskal.test(values ~ group, data = subset(dat.st,perc=="d0_4_expansion")) #Kruskal-Wallis chi-squared = 30.299, df = 4, p-value = 4.255e-06
+
+#wilcox tests with Benjamini-Hochberg adjustment of pvalues for the individual comparisons
+wil.expansion<-wilcox_test(formula=values ~ group,data=subset(dat.st,perc=="d0_4_expansion"), paired = FALSE, p.adjust.method = "BH")
+wil.expansion
+
+
+#add the sig.stats to mean.dat2 to make plotting SA2AML_GEXup_EPanchup_TSS_intersUp
+wilcoxonlist<-list(wil.expansion)
+names(wilcoxonlist)<-c("d0_4_expansion")
+mean.dat$p.adj.signif.vs.CTRL<-""
+mean.dat$p.adj.vs.CTRL<-""
+mean.dat$perc<-factor(mean.dat$perc)
+
+KDs=c("STAG1KD","STAG2KD","STAG1_2KD","RAD21KD")
+
+for (cat in levels(mean.dat$perc)){
+  for (KD in KDs){ 
+mean.dat[mean.dat$perc == cat & mean.dat$group==KD, "p.adj.signif.vs.CTRL"]<-subset(wilcoxonlist[[cat]],group1=="CTRL"&group2==KD)["p.adj.signif"]
+mean.dat[mean.dat$perc == cat & mean.dat$group==KD, "p.adj.vs.CTRL"]<-subset(wilcoxonlist[[cat]],group1=="CTRL"&group2==KD)["p.adj"]
+}}
+```
+
+## also check testing for separate control types
+```{r}
+#general testing for significant differences of groups for each CFU cat
+kruskal.test(values ~ group2, data = subset(dat.st,perc=="d0_4_expansion")) #Kruskal-Wallis chi-squared = 30.731, df = 6, p-value = 2.852e-05
+
+#wilcox tests with Benjamini-Hochberg adjustment of pvalues for the individual comparisons
+wil.expansion2<-wilcox_test(formula=values ~ group2,data=subset(dat.st,perc=="d0_4_expansion"), paired = FALSE, p.adjust.method = "BH")
+wil.expansion2
+```
+
+
+
+
+## show adj. p-value vs CTRL significance level with stars in plot and position legend inside plot
+### using combined control testing results
+```{r}
+# subset mean dat expansion
+meandatexp<-subset(mean.dat,perc=="d0_4_expansion")
+dat.stexp<-subset(dat.st,perc=="d0_4_expansion")
+
+# plot barplots with replicates as dots: expansion rates -  mark controls by subgroup via shape: control subgroup dots mixed within bar
+bplotexp2<-ggplot(meandatexp, aes(group, mean,fill=group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.8) +
+  geom_errorbar(data=meandatexp,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = dat.stexp, aes(x=group,y=values,fill=group,color=group,shape=group2),alpha=1,size=1,width=0.1)+
+  scale_fill_manual(values = c("CTRL" = "firebrick1", "STAG1KD" = "darkgoldenrod2", "STAG2KD" = "lightgreen", "STAG1_2KD" = "lightskyblue2", "RAD21KD" = "mediumorchid2")) +
+  scale_color_manual(values = c("CTRL" = "firebrick2", "STAG1KD" = "darkgoldenrod3", "STAG2KD" = "seagreen", "STAG1_2KD" = "lightskyblue3", "RAD21KD" = "mediumorchid3")) +
+  scale_shape_manual(values = c("CTRL" = 16,"MOCK" = 17,"UNTR" = 2, "STAG1KD" = 16, "STAG2KD" = 16, "STAG1_2KD" = 16, "RAD21KD" = 16)) +
+  geom_text(data=meandatexp,aes(y=mean+sd*3),label=meandatexp$p.adj.signif.vs.CTRL,position = position_dodge(width = 0.9),size=8)+
+  xlab("") + ylab("expansion d0-d4") +
+  scale_x_discrete(labels=c("CTRL\nHSPCs","STAG2\nKD","STAG1\nKD","STAG1+2\nKD","RAD21\nKD")) +
+  theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=18),
+  legend.text=element_text(size=16),
+  legend.title=element_text(size=16,face="bold"),
+  legend.background = element_blank(),
+  legend.box.background = element_rect(colour = "black"),
+  axis.title=element_text(size=16,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="right",
+  axis.line = element_line(colour = "black"),)
+# plot barplots with replicates as dots: expansion rates - mark controls by subgroup via shape: control subgroup dots shifted within bar
+bplotexp3<-ggplot(meandatexp, aes(group, mean,fill=group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.8) +
+  geom_errorbar(data=meandatexp,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = dat.stexp, aes(x=group,y=values,fill=group,color=group,shape=group2),alpha=1,size=1,position = position_dodge(width = 0.9))+
+  scale_fill_manual(values = c("CTRL" = "firebrick1", "STAG1KD" = "darkgoldenrod2", "STAG2KD" = "lightgreen", "STAG1_2KD" = "lightskyblue2", "RAD21KD" = "mediumorchid2")) +
+  scale_color_manual(values = c("CTRL" = "firebrick2", "STAG1KD" = "darkgoldenrod3", "STAG2KD" = "seagreen", "STAG1_2KD" = "lightskyblue3", "RAD21KD" = "mediumorchid3")) +
+  scale_shape_manual(values = c("CTRL" = 16,"MOCK" = 17,"UNTR" = 2, "STAG1KD" = 16, "STAG2KD" = 16, "STAG1_2KD" = 16, "RAD21KD" = 16)) +
+  geom_text(data=meandatexp,aes(y=mean+sd*3),label=meandatexp$p.adj.signif.vs.CTRL,position = position_dodge(width = 0.9),size=8)+
+  xlab("") + ylab("expansion d0-d4") +
+  scale_x_discrete(labels=c("CTRL\nHSPCs","STAG2\nKD","STAG1\nKD","STAG1+2\nKD","RAD21\nKD")) +
+  theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=18),
+  legend.text=element_text(size=16),
+  legend.title=element_text(size=16,face="bold"),
+  legend.background = element_blank(),
+  legend.box.background = element_rect(colour = "black"),
+  axis.title=element_text(size=16,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position="right",
+  axis.line = element_line(colour = "black"),)
+
+
+#export plots
+pdf(file=file.path(WORKDIR,"Expansionstats_CohKDs_sd_transfections.as.replicates.padj.2.pdf"), width = 8, height = 5)
+plot(bplotexp2)
+dev.off()
+pdf(file=file.path(WORKDIR,"Expansionstats_CohKDs_sd_transfections.as.replicates.padj.3.pdf"), width = 8, height = 5)
+plot(bplotexp3)
+dev.off() 
+
+##add labels for replicates
+pdf(file=file.path(WORKDIR,"Expansionstats_CohKDs_sd_transfections.as.replicates.padj.lab.pdf"), width = 12, height = 5)
+bplotexp+
+geom_text_repel(data = dat.stexp,aes(y=values, label=labelID),
+                  size=2,
+                  nudge_x=0,
+                  segment.size=0.3,
+                  min.segment.length=0.3,
+                  point.padding=0,
+                  segment.alpha=0.5,
+                  max.overlaps = 50,
+                  force = 2,
+                  show.legend = FALSE)
+dev.off()
+```
+
+# generate a nice metadata table for all siRNA Expansionstats_CohKDs_sd_transfections
+```{r}
+#select columns and rename
+CD34cultures<-Expdata[,c("Sample","group_detail","group","d0","d4_living","donor","d0_4_expansion")]
+colnames(CD34cultures)<-c("Sample","transfection","group","Cells_d0","Cells_d4","donor","expansion")
+CD34cultures<-CD34cultures[,c("Sample","group","donor","transfection","Cells_d0","Cells_d4","expansion")]
+CD34cultures[CD34cultures$transfection=="RAD21-2 (RAD21_2031)","transfection"]<-"RAD21_2031"
+CD34cultures[CD34cultures$transfection=="RAD21-1 (RAD21_467)","transfection"]<-"RAD21_467"
+CD34cultures[CD34cultures$transfection=="RAD21-467","transfection"]<-"RAD21_467"
+CD34cultures[CD34cultures$transfection=="RAD21-2031","transfection"]<-"RAD21_2031"
+CD34cultures[CD34cultures$transfection=="RAD21 pool","transfection"]<-"RAD21_pool"
+CD34cultures$donortreat<-paste0(CD34cultures$donor,"_",CD34cultures$transfection)
+#add information on CFU availability
+CD34cultures$CFU<-0
+CFUstats<-read.csv(file.path(PROJDIR,"CFU","Summary_stats_CD34_KDs_CFU.2.csv"))
+CFUfiltdata<-CFUstats %>% drop_na(CFU.total)
+CD34cultures[CD34cultures$Sample %in% CFUfiltdata$X...Sample,"CFU"]<-1
+
+#add information on RNAseq availability
+RNAsmeta<-read.table(file.path(PROJDIR,"RNAseq/Metadata/Metadata_RNAseq_HSPCs_cohesin_KD.txt"),sep="\t",header=TRUE)
+RNAsmeta[RNAsmeta$siRNA12=="Untr","siRNA12"]<-"Untreated"
+RNAsmeta[RNAsmeta$siRNA12=="siLuc","siRNA12"]<-"CTRL"
+RNAsmeta[RNAsmeta$siRNA12=="siLuc2x","siRNA12"]<-"CTRLx2"
+RNAsmeta[RNAsmeta$siRNA12=="poolSA1","siRNA12"]<-"SA1_pool"
+RNAsmeta[RNAsmeta$siRNA12=="poolSA2","siRNA12"]<-"SA2_pool"
+RNAsmeta[RNAsmeta$siRNA12=="poolRAD21","siRNA12"]<-"RAD21_pool"
+RNAsmeta[RNAsmeta$siRNA12=="RAD21pool","siRNA12"]<-"RAD21_pool"
+RNAsmeta[RNAsmeta$siRNA12=="poolSA1_poolSA2","siRNA12"]<-"SA1_SA2_pool"
+RNAsmeta$donortreat<-paste0(RNAsmeta$donor,"_",RNAsmeta$siRNA12)
+CD34cultures$RNAseq<-0
+CD34cultures[CD34cultures$donortreat %in% RNAsmeta$donortreat,"RNAseq"]<-1
+duplicatesWO_RNAseq<-c("CD34_6_2","CD34_6_4","CD34_7_1","CD34_7_3")
+CD34cultures[CD34cultures$Sample %in% duplicatesWO_RNAseq,"RNAseq"]<-0
+
+#add information on ChIPseq etc availability
+METALIST<-list()
+METALIST[["H3K27ac"]]<-read.csv(file.path(PROJDIR,"ChIP_KD_analysis/H3K27ac","CD34_cohesinKD_ChIP_H3K27ac_meta.csv"),row.names=1)
+METALIST[["HiC"]]<-read.csv(file.path(PROJDIR,"HiC_KDs/DeepSeq_Analysis/CD34_cohesinKD_HiC_meta.csv"),row.names=1)
+METALIST[["ATAC"]]<-read.csv(file.path(PROJDIR,"ATAC_RS/CD34_cohesinKD_ATAC_meta.csv"),row.names=1)
+CHIPSTF<-c("RAD21","CTCF","SA1","SA2","MED12","PU1")
+for (c in CHIPSTF){
+METALIST[[c]]<-read.csv(file.path(PROJDIR,"ChIP_KD_analysis/Cohesin_CTCF_MED12/Metadata",paste0("CD34_cohesinKD_ChIP_",c,"_meta.csv")),row.names=1)
+}
+Assays<-c("H3K27ac","ATAC",CHIPSTF,"HiC")
+for (a in Assays){
+CD34cultures[,a]<-0
+CD34cultures[CD34cultures$Sample %in% METALIST[[a]]$Sample,a]<-1
+}
+
+write.table(CD34cultures,file.path(PROJDIR,"CD34_CohesinKD_samples_overview.txt"),sep="\t",col.names=TRUE,row.names=FALSE,quote=FALSE)
+
+```
+
+

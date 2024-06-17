@@ -1,0 +1,194 @@
+---
+title: "Differential loop size distribution Analysis in Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+
+
+# load libraries and set directories
+```{r}
+## libraries
+library(reshape2)
+library(ggplot2)
+library(beanplot)
+library(rstatix)
+
+## paths
+WORKDIR="/misc/data/analysis/project_cohesin/CD34/HiC_KDs/DeepSeq_Analysis"
+LOOPDIR=file.path(WORKDIR,"loops/withoutXY")
+FIGURESDIR=file.path(WORKDIR,"figures","Loopsize_Beanplots")
+
+KDs<-c("SA2KD","SA1KD", "RAD21KD")
+Filts<-c("up.FC1", "down.FC1")
+
+## new dir for size plots
+dir.create(FIGURESDIR)
+```
+
+# read loop analysis files
+```{r}
+SA2KDloops<-read.table(file.path(LOOPDIR,"SA2KDvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=T,row.names=1)
+SA1KDloops<-read.table(file.path(LOOPDIR,"SA1KDvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=T,row.names=1)
+RAD21KDloops<-read.table(file.path(LOOPDIR,"RAD21KDvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=T,row.names=1)
+LooplistCD34<-list(SA2KDloops,SA1KDloops,RAD21KDloops)
+names(LooplistCD34)<-c("SA2KDloops","SA1KDloops","RAD21KDloops")
+```
+
+
+## calculate loop sizes and filter sig. loops
+```{r}
+for (KD in KDs){
+LooplistCD34[[paste0(KD,"loops")]]$loopsize<-LooplistCD34[[paste0(KD,"loops")]]$end2-LooplistCD34[[paste0(KD,"loops")]]$start1
+LooplistCD34[[paste0(KD,"loops_filt_strengthened")]]<-subset(LooplistCD34[[paste0(KD,"loops")]],padj<0.05 & log2FoldChange > 0.585)
+LooplistCD34[[paste0(KD,"loops_filt_weakened")]]<-subset(LooplistCD34[[paste0(KD,"loops")]],padj<0.05 & log2FoldChange < -0.585)
+LooplistCD34[[paste0(KD,"loops_filt_strengthened_Top500")]]<-head(subset(LooplistCD34[[paste0(KD,"loops")]],padj<0.05 & log2FoldChange > 0.585),500)
+LooplistCD34[[paste0(KD,"loops_filt_weakened_Top500")]]<-head(subset(LooplistCD34[[paste0(KD,"loops")]],padj<0.05 & log2FoldChange < -0.585),500)
+}
+```
+
+## report numbers for size categories
+```{r}
+changes<-c("strengthened","weakened")
+sizedf<-data.frame()
+for (KD in KDs){
+   for (change in changes){ 
+sizedf[paste0(change,"<500kb"),KD]<-nrow(subset(LooplistCD34[[paste0(KD,"loops_filt_",change)]],loopsize<500000))
+sizedf[paste0(change,">500kb"),KD]<-nrow(subset(LooplistCD34[[paste0(KD,"loops_filt_",change)]],loopsize>500000))
+sizedf[paste0(change,"total"),KD]<-nrow(subset(LooplistCD34[[paste0(KD,"loops_filt_",change)]]))
+}}
+sizedf
+write.table(sizedf,file.path(LOOPDIR,"diffloopsizes.txt"))
+```
+
+## test up vs down sizes with wilcoxon test
+```{r}
+#1vs1 comparisons
+for (KD in KDs){
+LooplistCD34[[paste0(KD,"wilcoxonUPvsDown")]]<-wilcox.test(LooplistCD34[[paste0(KD,"loops_filt_strengthened")]]$loopsize,LooplistCD34[[paste0(KD,"loops_filt_weakened")]]$loopsize)
+LooplistCD34[[paste0(KD,"wilcoxonUPvsDownTop500")]]<-wilcox.test(LooplistCD34[[paste0(KD,"loops_filt_strengthened_Top500")]]$loopsize,LooplistCD34[[paste0(KD,"loops_filt_weakened_Top500")]]$loopsize)
+}
+
+
+#SA1 vs. SA2 all comparisons all tests with BH adjustment
+df1<-data.frame(size=LooplistCD34[[paste0("SA1KD","loops_filt_strengthened")]]$loopsize,group="SA1KD",change="strengthened",groupchange="SA1KD_strenghthened")
+df2<-data.frame(size=LooplistCD34[[paste0("SA1KD","loops_filt_weakened")]]$loopsize,group="SA1KD",change="weakened",groupchange="SA1KD_weakened")
+df3<-data.frame(size=LooplistCD34[[paste0("SA2KD","loops_filt_strengthened")]]$loopsize,group="SA2KD",change="strengthened",groupchange="SA2KD_strenghthened")
+df4<-data.frame(size=LooplistCD34[[paste0("SA2KD","loops_filt_weakened")]]$loopsize,group="SA2KD",change="weakened",groupchange="SA2KD_weakened")
+combdf<-rbind(df1,df2,df3,df4)
+
+library(rstatix)
+wilSA1SA2<-wilcox_test(formula=size ~ groupchange,data=combdf, paired = FALSE, p.adjust.method = "BH")
+wilSA1SA2
+write.table(wilSA1SA2,file.path(LOOPDIR,"SA1vsSA2_wilcoxon.BHadj.txt"),sep="\t",quote=F,row.names=F)
+
+
+
+```
+
+## generate beanplots comparing sizes of weakened and strengthened loops using all sign. loops
+```{r}
+LooplistCD34[["SA2KDcolors"]] <- c("springgreen1","springgreen3")
+LooplistCD34[["SA1KDcolors"]] <- c("#f7bd37","darkgoldenrod3")
+LooplistCD34[["RAD21KDcolors"]] <- c("mediumorchid1","mediumorchid3")
+marks <- c(20000,50000,100000,200000, 500000,1000000,2000000, 5000000,10000000)
+
+for (KD in KDs){
+str<-LooplistCD34[[paste0(KD,"loops_filt_strengthened")]]$loopsize
+weak<-LooplistCD34[[paste0(KD,"loops_filt_weakened")]]$loopsize
+if (length(str)<length(weak)){
+data<-data.frame(weakened=weak)
+data$strenghtened<-c(str, rep(NA, nrow(data)-length(str)))  #add NAs to fill up missing entries other wise no dataframe
+}
+else {
+weakenedNA<-c(weak, rep(NA, length(str)-length(weak))) #add NAs to fill up missing entries other wise no dataframe
+data<-data.frame(weakened=weakenedNA,strengthened=str)
+}
+if (LooplistCD34[[paste0(KD,"wilcoxonUPvsDown")]]$p.value>0.05){
+siglvl<-"ns"
+}
+else {
+siglvl<-"****"
+}
+pdf(file=file.path(FIGURESDIR,paste0("Beanplot_LoopSizeDistribution.",KD,".vsCTRL_sig.n2t.pdf")), height=4, width=2.5)
+beanplot(data,log="y", bw="nrd",what=c(0,1,0,0),axes = FALSE, col = "darkgrey", border = "darkgrey" ,overallline = "median", method="jitter", boxwex = 1.25, beanlinewd = 1, maxstripline = 0.8, ylim=c(20000,10000000), lwd=0.5)
+par(new=TRUE)
+boxplot(data,range=0,log="y", style="quantile",axes = FALSE, col = LooplistCD34[[paste0(KD,"colors")]], alpha=0.5, border = "black",overallline = "median", notch=TRUE, boxwex = 0.5, staplewex = 0.5, ylim=c(20000,10000000),lwd=0.6)
+axis(1,padj=-0.8,family="Helvetica",cex.axis=0.5,at=1:2, labels=c("weakened","strenghtened"))
+axis(2,padj=0.4,family="Helvetica",cex.axis=0.6,at=marks,labels=format(marks,scientific=FALSE),las=2,mgp=c(0,.6,0))
+mtext("loop domain size",family="Helvetica",side=2,line=2,cex=1.2,padj=-1.2)
+mtext(paste0("in ",KD),family="Helvetica",ps=12,side=1,line=2,cex=1.2,padj=0)
+text(1.5,10000000,siglvl) #adding significance levels
+segments(1,5000000,2,5000000)
+dev.off()
+}
+```
+
+## generate beanplots comparing sizes of weakened and strengthened loops using top 500 sign. loops
+```{r}
+for (KD in KDs){
+str<-LooplistCD34[[paste0(KD,"loops_filt_strengthened_Top500")]]$loopsize
+weak<-LooplistCD34[[paste0(KD,"loops_filt_weakened_Top500")]]$loopsize
+if (length(str)<length(weak)){
+data<-data.frame(weakened=weak)
+data$strenghtened<-c(str, rep(NA, nrow(data)-length(str)))  #add NAs to fill up missing entries other wise no dataframe
+}
+else {
+weakenedNA<-c(weak, rep(NA, length(str)-length(weak))) #add NAs to fill up missing entries other wise no dataframe
+data<-data.frame(weakened=weakenedNA,strengthened=str)
+}
+if (LooplistCD34[[paste0(KD,"wilcoxonUPvsDownTop500")]]$p.value>0.05){
+siglvl<-"ns"
+}
+else {
+siglvl<-"****"
+}
+pdf(file=file.path(FIGURESDIR,paste0("Beanplot_LoopSizeDistribution.",KD,".vsCTRL_top500.sig.n2t.pdf")), height=4, width=2.5)
+beanplot(data,log="y", bw="nrd",what=c(0,1,0,0),axes = FALSE, col = "darkgrey", border = "darkgrey" ,overallline = "median", method="jitter", boxwex = 1.25, beanlinewd = 1, maxstripline = 0.8, ylim=c(20000,10000000), lwd=0.5)
+par(new=TRUE)
+boxplot(data,range=0,log="y", style="quantile",axes = FALSE, col = LooplistCD34[[paste0(KD,"colors")]], alpha=0.5, border = "black",overallline = "median", notch=TRUE, boxwex = 0.5, staplewex = 0.5, ylim=c(20000,10000000),lwd=0.6)
+axis(1,padj=-0.8,family="Helvetica",cex.axis=0.5,at=1:2, labels=c("weakened","strenghtened"))
+axis(2,padj=0.4,family="Helvetica",cex.axis=0.6,at=marks,labels=format(marks,scientific=FALSE),las=2,mgp=c(0,.6,0))
+mtext("loop domain size",family="Helvetica",side=2,line=2,cex=1.2,padj=-1.2)
+mtext(paste0("in ",KD),family="Helvetica",ps=12,side=1,line=2,cex=1.2,padj=0)
+text(1.5,10000000,"****") #adding significance levels
+segments(1,5000000,2,5000000)
+dev.off()
+}
+```
+
+
+#### SA1 and SA2 KD combined plot
+## generate beanplots comparing sizes of weakened and strengthened loops using all sign. loops in SA1 and SA2KD results
+```{r}
+weakSA1<-LooplistCD34[["SA1KDloops_filt_weakened"]]$loopsize #longest vector
+strSA1<-c(LooplistCD34[["SA1KDloops_filt_strengthened"]]$loopsize,rep(NA, length(weakSA1)-length(LooplistCD34[["SA1KDloops_filt_strengthened"]]$loopsize)))
+weakSA2<-c(LooplistCD34[["SA2KDloops_filt_weakened"]]$loopsize,rep(NA, length(weakSA1)-length(LooplistCD34[["SA2KDloops_filt_weakened"]]$loopsize)))
+strSA2<-c(LooplistCD34[["SA2KDloops_filt_strengthened"]]$loopsize,rep(NA, length(weakSA1)-length(LooplistCD34[["SA2KDloops_filt_strengthened"]]$loopsize)))
+
+data<-data.frame(weakSA2=weakSA2,strSA2=strSA2,weakSA1=weakSA1,strSA1=strSA1)
+colvec<-c(LooplistCD34[["SA2KDcolors"]],LooplistCD34[["SA1KDcolors"]])
+
+pdf(file=file.path(FIGURESDIR,paste0("Beanplot_LoopSizeDistribution.SA1vsSA2KD.vsCTRL_sig.n2t.pdf")), height=4, width=4)
+beanplot(data,log="y", bw="nrd",what=c(0,1,0,0),axes = FALSE, col = "darkgrey", border = "darkgrey" ,overallline = "median", method="jitter", boxwex = 1.25, beanlinewd = 1, maxstripline = 0.8, ylim=c(20000,10000000), lwd=0.5)
+par(new=TRUE)
+boxplot(data,range=0,log="y", style="quantile",axes = FALSE, col = colvec, alpha=0.5, border = "black",overallline = "median", notch=TRUE, boxwex = 0.5, staplewex = 0.5, ylim=c(20000,10000000),lwd=0.6)
+axis(1,padj=-0.8,family="Helvetica",cex.axis=0.5,at=1:2, labels=c("weakened","strenghtened"))
+axis(1,padj=-0.8,family="Helvetica",cex.axis=0.5,at=3:4, labels=c("weakened","strenghtened"))
+axis(2,padj=0.4,family="Helvetica",cex.axis=0.6,at=marks,labels=format(marks,scientific=FALSE),las=2,mgp=c(0,.6,0))
+mtext("loop domain size",family="Helvetica",side=2,line=2,cex=1.2,padj=-1.2)
+mtext(paste0("in STAG2 KD"),family="Helvetica",ps=12,side=1,at=1.5,line=2,cex=1.2,padj=0)
+mtext(paste0("in STAG1 KD"),family="Helvetica",ps=12,side=1,at=3.5,line=2,cex=1.2,padj=0)
+text(1.5,6000000,subset(wilSA1SA2,group1=="SA2KD_strenghthened" & group2=="SA2KD_weakened")$p.adj.signif) #adding significance levelstext(1.5,5200000,subset(wilSA1SA2,group1=="SA2KD_strenghthened" & group2=="SA2KD_weakened")$p.adj.signif) #adding significance levels
+text(3,8000000,subset(wilSA1SA2,group1=="SA1KD_strenghthened" & group2=="SA2KD_strenghthened")$p.adj.signif) #adding significance levels
+text(3.5,6000000,subset(wilSA1SA2,group1=="SA1KD_strenghthened" & group2=="SA1KD_weakened")$p.adj.signif) #adding significance levels
+text(2,11000000,subset(wilSA1SA2,group1=="SA1KD_weakened" & group2=="SA2KD_weakened")$p.adj.signif) #adding significance levels
+segments(1,5000000,2,5000000)
+segments(2,7000000,4,7000000)
+segments(3,5000000,4,5000000)
+segments(1,9500000,3,9500000)
+dev.off()
+
+```
+
+

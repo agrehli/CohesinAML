@@ -1,0 +1,166 @@
+---
+title: "Clustering of PC1, Loop and TAD scores of Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "08 2021"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+library(edgeR)
+library(ggplot2)
+library(umap)
+library(ggrepel)
+##read in data of all 3 types
+WORKDIR="/misc/data/analysis/project_cohesin/CD34/HiC_KDs/DeepSeq_Analysis/"
+FIGDIRTAD<-file.path(WORKDIR,"figures/TAD_Clustering")
+FIGDIRLOOP<-file.path(WORKDIR,"figures/Loop_Clustering")
+FIGDIRPC1<-file.path(WORKDIR,"figures/PC1_Clustering")
+dir.create(FIGDIRTAD)
+dir.create(FIGDIRLOOP)
+dataPC150KB <- read.delim(file.path(WORKDIR,"HiC_CD34_PC1_50KB_annotated.txt"), row.names="ID")
+dataTAD <- read.delim(file.path(WORKDIR,"loops","CD34.merged.tad.scores.Rinput.txt"), row.names=1)
+dataLoop <- read.delim(file.path(WORKDIR,"loops","CD34.merged.loop.scores.Rinput.txt"), row.names=1)
+group <- factor(c(rep("CTRL",8), rep("SA1KD",6), rep("SA2KD",6), rep("RAD21KD",5)))
+batch <- factor(c(14,17,18,20,21,22,27,28,14,17,20,21,27,28,14,17,20,21,22,28,18,20,22,27,28))
+```
+
+## edgeR normalization of scores and batch correction for donor
+```{r}
+design=model.matrix(~0 + group)
+dTAD <- DGEList(counts=dataTAD,group=group)
+dTAD <- calcNormFactors(dTAD)
+logcpmTAD <- cpm(dTAD, prior.count=2, log=TRUE)
+corr.logcpmTAD <- removeBatchEffect(logcpmTAD, batch=batch, design=design)
+dloop <- DGEList(counts=dataLoop,group=group)
+dloop <- calcNormFactors(dloop)
+logcpmLoop <- cpm(dloop, prior.count=2, log=TRUE)
+corr.logcpmLoop <- removeBatchEffect(logcpmLoop, batch=batch, design=design)
+corr.PC150KB <- removeBatchEffect(dataPC150KB, batch=batch, design=design)
+```
+
+## clustering of PC1 scores (no additional transformation, batch corrected)
+```{r}
+#set seed for reproducibility
+set.seed(seed = 42)
+#appply umap algorithm on transposed data matrix, then extract layout for plotting
+umap.dat<-umap::umap(t(as.matrix(corr.PC150KB)))
+umap.dat2<-data.frame(umap.dat$layout) 
+#add metadata info to umap dataframe to be used in ggplot
+umap.dat2$group<-group
+umap.dat2$donor<-batch
+##plot
+ umap.p<-ggplot(data =umap.dat2)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-3,3)) +
+    scale_y_continuous(limits = c(-3,4))+    
+    geom_point(size = 12, aes(colour=group))+
+    scale_color_manual(values = c("CTRL" = "firebrick", "SA2KD" = "seagreen","SA1KD" = "darkgoldenrod","RAD21KD"="mediumvioletred")) +
+    #geom_text_repel(aes(label=batch),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP HiC PC1 50kb")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRPC1,"PC1_50KB_umap_CD34.corr.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+
+## clustering of TADscores (logcpm transformed)
+```{r}
+#set seed for reproducibility
+set.seed(seed = 42)
+#appply umap algorithm on transposed data matrix, then extract layout for plotting
+umap.dat<-umap::umap(t(as.matrix(corr.logcpmTAD)))
+umap.dat2<-data.frame(umap.dat$layout) 
+#add metadata info to umap dataframe to be used in ggplot
+umap.dat2$group<-group
+umap.dat2$donor<-batch
+##plot
+ umap.p<-ggplot(data =umap.dat2)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-6,4)) +
+    scale_y_continuous(limits = c(-4,8))+    
+    geom_point(size = 12, aes(colour=group))+
+    scale_color_manual(values = c("CTRL" = "firebrick", "SA2KD" = "seagreen","SA1KD" = "darkgoldenrod","RAD21KD"="mediumvioletred")) +
+    #geom_text_repel(aes(label=batch),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP HiC TAD scores")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRTAD,"TAD_scores_50KB_umap_CD34.corr.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+
+## clustering of Loop scores (logcpm transformed)
+```{r}
+#set seed for reproducibility
+set.seed(seed = 1234)
+#appply umap algorithm on transposed data matrix, then extract layout for plotting
+umap.dat<-umap::umap(t(as.matrix(corr.logcpmLoop)))
+umap.dat2<-data.frame(umap.dat$layout) 
+#add metadata info to umap dataframe to be used in ggplot
+umap.dat2$group<-group
+umap.dat2$donor<-batch
+##plot
+ umap.p<-ggplot(data =umap.dat2)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-3,3)) +
+    scale_y_continuous(limits = c(-3,3))+    
+    geom_point(size = 12, aes(colour=group))+
+    scale_color_manual(values = c("CTRL" = "firebrick", "SA2KD" = "seagreen","SA1KD" = "darkgoldenrod","RAD21KD"="mediumvioletred")) +
+    #geom_text_repel(aes(label=batch),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP HiC Loop scores")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRLOOP,"Loop_scores_50KB_umap_CD34.corr.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+
+

@@ -1,0 +1,230 @@
+---
+title: "Clustering of PC1, Loop and TAD scores of Cohesin AMLs"
+author: "Alexander Fischer"
+date: "11 2021"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+# load libraries
+library(edgeR)
+library(ggplot2)
+library(umap)
+library(Rtsne)
+library(ggrepel)
+#define paths
+WORKDIR="/misc/data/analysis/project_cohesin/Cohesin_AML/HiC"
+FIGDIRTAD<-file.path(WORKDIR,"figures/TAD_Clustering")
+FIGDIRLOOP<-file.path(WORKDIR,"figures/Loop_Clustering")
+FIGDIRPC1<-file.path(WORKDIR,"figures/PC1_Clustering")
+# read in data of PC1/TAD/Loop Scores for complete patient data set
+dataPC150KB <- read.delim(file.path(WORKDIR,"HiC_CohAML_PC1_50KB_annotated.XYrem.txt"), row.names="ID")
+dataTAD <- read.delim(file.path(WORKDIR,"loops","CohAML_allpat_merged.tad.scores.XYrm.Rinput.txt"), row.names=1)
+dataLoop <- read.delim(file.path(WORKDIR,"loops","CohAML_allpat_merged.loop.scores.XYrm.Rinput.txt"), row.names=1)
+metadata<- read.table(file.path(WORKDIR,"AllmutvsCTRLmeta.2.csv"), header=T, sep=",")
+```
+
+# collect relevant meta
+```{r}
+relevantmeta<-data.frame(row.names=colnames(logcpmTAD),group=factor(metadata$group),patID=factor(metadata$short_ID),VialID=factor(metadata$Vial_ID),
+RUNX1mut=factor(metadata$RUNX1), NPM1mut=factor(metadata$npm1),
+ASXL1mut=factor(metadata$ASXL1),SRSF2mut=factor(metadata$SRSF2),flt3itd=factor(metadata$flt3itd,levels=c("pos","neg")), sex=factor(metadata$sex))
+#add advanced meta:combinations of muts
+  relevantmeta$SRSF2mutASXL1mut<-paste0(relevantmeta$SRSF2mut,relevantmeta$ASXL1mut)
+  relevantmeta$NPM1mutRUNX1mut<-paste0(relevantmeta$NPM1mut,relevantmeta$RUNX1mut)
+  relevantmeta$NPM1mutASXL1mut<-paste0(relevantmeta$NPM1mut,relevantmeta$ASXL1mut)
+  relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mut<-paste0(relevantmeta$NPM1mutRUNX1mut,relevantmeta$SRSF2mutASXL1mut)
+  relevantmeta$NPM1mutRUNX1mut<-factor(relevantmeta$NPM1mutRUNX1mut,levels=c("posneg","negpos","negneg"))
+  relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mut<-factor(relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mut,levels=c("posnegnegneg", "negnegnegneg","negnegposneg","negnegpospos","negposnegneg","negpospospos"))
+  relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mutFLT3ITDmut<-paste0(relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mut,  relevantmeta$flt3itd)
+  relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mutFLT3ITDmut<-factor(relevantmeta$NPM1mutRUNX1mutSRSF2mutASXL1mutFLT3ITDmut,
+  levels=c("posnegnegnegneg","posnegnegnegpos", "negnegnegnegpos","negnegnegnegneg","negnegposnegpos","negnegposnegneg","negnegposposneg","negposnegnegneg","negposposposneg","negposnegnegpos"))
+```
+
+# clustering of PC1 scores (unmodified)
+```{r}
+#set seed for reproducibility
+  set.seed(seed = 42)
+#appply umap algorithm on transposed data matrix, then extract layout for plotting
+umap.dat<-umap::umap(t(as.matrix(dataPC150KB)),n_neighbors=5)
+umap.dat2<-data.frame(umap.dat$layout) 
+#add metadata info to umap dataframe to be used in ggplot
+umap.dat3<-cbind(umap.dat2,relevantmeta)
+##including FLT3-ITD and RUNX1 using the filled shapes so the outline serves as additional encoding
+ umap.p<-ggplot(data =umap.dat3)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+   # scale_x_continuous(limits = c(-3.4,3.4)) +
+   # scale_y_continuous(limits = c(-1.8,1.8))+    
+    geom_point(size=12,aes(fill=group,colour=flt3itd,shape=NPM1mutRUNX1mut,stroke = flt3itd))+
+    scale_fill_manual(values = c("CTRL" = "firebrick", "SA2mut" = "seagreen","RAD21mut"="mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut")) +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "darkgrey"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 2),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1","RUNX1","none shown")) +
+    #geom_text_repel(aes(label=metadata$shortID_patID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    #geom_text_repel(data= umap.dat2HICPaT, aes(label=VialID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP HiC PC1 50kb")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRPC1,"PC1_50KB_umap_XYrem.CohAML.2.n5.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+
+
+# normalization of scores for TADs and loops using edgeR
+```{r}
+group<-metadata$group
+dTAD <- DGEList(counts=dataTAD,group=group)
+dTAD <- calcNormFactors(dTAD)
+logcpmTAD <- cpm(dTAD, prior.count=2, log=TRUE)
+dloop <- DGEList(counts=dataLoop,group=group)
+dloop <- calcNormFactors(dloop)
+logcpmLoop <- cpm(dloop, prior.count=2, log=TRUE)
+```
+
+
+# clustering of TADscores (logcpm transformed)
+```{r}
+#set seed for reproducibility
+  set.seed(seed = 42)
+#appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(logcpmTAD)),n_neighbors=5)
+  umap.dat2<-data.frame(umap.dat$layout) 
+#add metadata info to umap dataframe to be used in ggplot
+  umap.dat3<-cbind(umap.dat2,relevantmeta)
+##including FLT3-ITD and RUNX1 using the filled shapes so the outline serves as additional encoding
+ umap.p<-ggplot(data =umap.dat3)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    #scale_x_continuous(limits = c(-3.4,3.4)) +
+    #scale_y_continuous(limits = c(-1.8,1.8))+    
+    geom_point(size=12,aes(fill=group,colour=flt3itd,shape=NPM1mutRUNX1mut,stroke = flt3itd))+
+    scale_fill_manual(values = c("CTRL" = "firebrick", "SA2mut" = "seagreen","RAD21mut"="mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut")) +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "darkgrey"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 2),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1","RUNX1","none shown")) +
+    #geom_text_repel(aes(label=metadata$shortID_patID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP TADscores")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRTAD,"TADscores_umap_XYrem.CohAML.2.n4.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+#plot tSNE the same way 
+d.transversed <- data.matrix(t(logcpmTAD))
+set.seed(1234)
+rtsne_out <- Rtsne(d.transversed, check_duplicates = FALSE, pca = TRUE, perplexity=3, theta=0.25, dims=2, max_iter = 10000) 
+embedding <- as.data.frame(rtsne_out$Y)
+tsne.dat3<-cbind(embedding,relevantmeta)
+tsne.p<-ggplot(data =tsne.dat3)+
+    aes(x = V1, y = V2)+
+    xlab("tSNE-X") +
+    ylab("tSNE-Y") +
+    scale_x_continuous(limits = c(-20,20)) +
+    scale_y_continuous(limits = c(-20,20))+    
+    geom_point(size=16,aes(fill=group,colour=flt3itd,shape=NPM1mutRUNX1mut,stroke = flt3itd))+
+    scale_fill_manual(values = c("CTRL" = "firebrick", "SA2mut" = "seagreen","RAD21mut"="mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut")) +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "darkgrey"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 2),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1","RUNX1","none shown")) +
+    #geom_text_repel(aes(label=metadata$shortID_patID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "tSNE TAD scores")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRTAD,"TADscores_tSNE_XYrem.CohAML.2.pdf"), height=8, width=12)
+plot(tsne.p)
+dev.off()
+```
+
+# clustering of Loop scores (logcpm transformed)
+```{r}
+#set seed for reproducibility
+  set.seed(seed = 24)
+#appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(logcpmLoop)),n_neighbors=4)
+  umap.dat2<-data.frame(umap.dat$layout) 
+#add metadata info to umap dataframe to be used in ggplot
+  umap.dat3<-cbind(umap.dat2,relevantmeta)
+##including FLT3-ITD and RUNX1 using the filled shapes so the outline serves as additional encoding
+ umap.p<-ggplot(data =umap.dat3)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-5,4)) +
+   scale_y_continuous(limits = c(-3,3))+    
+    geom_point(size=12,aes(fill=group,colour=flt3itd,shape=NPM1mutRUNX1mut,stroke = flt3itd))+
+    scale_fill_manual(values = c("CTRL" = "firebrick", "SA2mut" = "seagreen","RAD21mut"="mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut")) +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "darkgrey"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 2),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1","RUNX1","none shown")) +
+    #geom_text_repel(aes(label=metadata$shortID_patID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    #geom_text_repel(data= umap.dat2HICPaT, aes(label=VialID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP Loop scores")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIRLOOP,"Loopscores_umap_XYrem.CohAML.2.n4.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+

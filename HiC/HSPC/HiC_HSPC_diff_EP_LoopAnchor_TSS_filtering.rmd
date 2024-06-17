@@ -1,0 +1,133 @@
+---
+title: "Filtering of differential loop Anchors in Cohesin KD HSPCs by TSS presence"
+author: "Alexander Fischer"
+date: "03 2023"
+output: html
+---
+
+
+## Loading libraries and set directories
+```{r}
+##libraries
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(corrplot)
+library(cowplot)
+#paths to directories
+DIR_DATA="/misc/data"
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/CD34")
+Peakdir<-file.path(WORKDIR,"ChIP_KD_analysis/Cohesin_CTCF_MED12/peaks")
+diffpeakdir<-file.path(WORKDIR,"ChIP_KD_analysis/Cohesin_CTCF_MED12/diffPeaks/")
+diffpeakdirH3K<-file.path(WORKDIR,"ChIP_KD_analysis/H3K27ac/diffPeaks")
+GEXdir<-file.path(WORKDIR,"RNAseq/Analysis/Resulttables/RNAseq_CD34_CohesinKD") 
+WORKDIRATAC<-file.path(WORKDIR,"ATAC")
+LOOPDIR=file.path(WORKDIR,"HiC_KDs/DeepSeq_Analysis/loops/withoutXY")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+AllEorEP=file.path(diffanchorsn2t,"H3K27overlap")
+AnchorsOverlapPairs<-file.path(diffanchorsn2t,"AnchorsOverlapPairs")
+TSSOverlap<-file.path(AnchorsOverlapPairs,"TSSoverlap")
+#DTmatrixdir<-file.path(WORKDIR,"HiC_KDs/DeepSeq_Analysis/n2t_V2_Diffloops_XYrm/figures/Heatmaps/DeeptoolsMatrices/PairedAnch")
+
+KDs<-c("SA2KD","SA1KD","RAD21KD")
+Filts<-c("up.FC1", "down.FC1")
+```
+
+
+# filter all diff loop with H3K27ac into E or P categories ignoring paired status
+## read peaks in anchors cented on H3K27ac or RAD21 peaks plus loop anchorID and coords
+```{r}
+overlaptypes<-c("CohesinAssEnhancers","CohesinAssEnhancers.RAD21centred")
+loopstatsbedALL<-vector(mode = "list", length = 0)
+for (MUT in KDs) {
+  for (FILT in Filts){
+      for (type in overlaptypes){
+path<-file.path(AllEorEP,"2wayOverlap",paste0(MUT,"vsCTRL.loopAnchors.red.",FILT,".",type,".2wayOverlap.bed"))
+loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]]<-loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]][,c(1:4,6:11)]
+colnames(loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]])<-c("Anchorchr","Anchorstart","Anchorend","AnchorID","Anchorstrand","peakchr","peakstart","peakend","peakname","peakoverlap") #rename columns
+}}}
+
+for (MUT in KDs) {
+  for (FILT in Filts){
+path<-file.path(AllEorEP,"TSSanchorOverlap",paste0(MUT,"vsCTRL.loopAnchors.red.",FILT,".CohesinAssEnhancers.Overlap.TSS.2wayoverlap.bed"))
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE)
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]][,c(1:4,6:11)]
+colnames(loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])<-c("Anchorchr","Anchorstart","Anchorend","AnchorID","Anchorstrand","TSSchr","TSSstart","TSSend","TSSname","TSSoverlap") #rename columns
+}}
+```
+
+
+## assign individual anchors as E or P
+```{r}
+All_AnchorTSS_CPM1_list<-list()
+for (MUT in KDs) {
+  for (FILT in Filts){
+df<-loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+Looplist<-list()
+Loopsinset<-unique(df$AnchorID)
+for (Loop in Loopsinset) {
+Loop_AllTSS<-subset(df,df$AnchorID == Loop) #all entries for the anchor of this loopID
+ExpressedTSS<-subset(Loop_AllTSS,Loop_AllTSS$TSSname %in% qstatfilt$GeneSymbol)
+ExpressedTSSinloop<-paste(unique(ExpressedTSS$TSSname),collapse=",") #paste all TSS in this anchor into on string
+Loop_allTSSin1<-Loop_AllTSS[1,1:5] #get only the first entry to represnet the loop
+Loop_allTSSin1$TSS <- ExpressedTSSinloop #add the TSS string to preserve all associated TSS
+Looplist[[Loop]]<-Loop_allTSSin1 #save in list
+}
+LoopTSSdf<-do.call(rbind.data.frame, Looplist) #get a df from the list
+LoopTSSdf$EPstatus<-"Promoter" #assign status promoter
+LoopTSSdf[(LoopTSSdf$TSS==""),"EPstatus"]<-"Enhancer" #assign status enhancer if no TSS
+All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS")]]<-LoopTSSdf
+}}
+```
+
+## assign peaks to these anchors
+```{r}
+for (MUT in KDs) {
+  for (FILT in Filts){
+df<-All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS")]]
+dfRAD<-loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]]
+dfH3K<-loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+Looplist<-list()
+Loopsinset<-df$AnchorID
+for (Loop in Loopsinset) {
+Loop_AllH3K<-subset(dfH3K,dfH3K$AnchorID == Loop & dfH3K$peakoverlap=="1") #all entries for the anchor of this loopID
+H3Kinloop<-paste(unique(Loop_AllH3K$peakname),collapse=",") #paste all peaks in this anchor into on string
+Loop_AllRAD<-subset(dfRAD,dfRAD$AnchorID == Loop & dfRAD$peakoverlap=="1") #all entries for the anchor of this loopID
+RADinloop<-paste(unique(Loop_AllRAD$peakname),collapse=",")
+df[(df$AnchorID == Loop),"RAD21peaks"]<-RADinloop
+df[(df$AnchorID == Loop),"H3K27acpeaks"]<-H3Kinloop
+}
+All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]]<-df
+}}
+
+#separate peaks by E-P status of the anchor
+dir.create(file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus"))
+statspeaks<-data.frame()
+for (MUT in KDs) {
+  for (FILT in Filts){
+  #get all enhancer peaks
+enh<-subset(All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]],EPstatus=="Enhancer")
+enhH3K27names<-unlist(lapply(enh$H3K27acpeaks,function(x) strsplit(as.character(x), ",")))
+enhRAD21names<-unlist(lapply(enh$RAD21peaks,function(x) strsplit(as.character(x), ",")))
+enhRAD21bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]],peakname %in% enhRAD21names)[,c(6:10)]
+enhH3K27bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],peakname %in% enhH3K27names)[,c(6:10)]
+  #get all promoter peaks
+prom<-subset(All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]],EPstatus=="Promoter")
+promH3K27names<-unlist(lapply(prom$H3K27acpeaks,function(x) strsplit(as.character(x), ",")))
+promRAD21names<-unlist(lapply(prom$RAD21peaks,function(x) strsplit(as.character(x), ",")))
+promRAD21bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]],peakname %in% promRAD21names)[,c(6:10)]
+promH3K27bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],peakname %in% promH3K27names)[,c(6:10)]
+#write bedfiles with peaks only
+write.table(enhRAD21bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Enhancer_RAD21peaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(enhH3K27bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Enhancer_H3K27acpeaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(promRAD21bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Promoter_RAD21peaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(promH3K27bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Promoter_H3K27acpeaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+#count peaks
+statspeaks[paste0(MUT,".",FILT),"Enhancer_RAD21peaks"]<-nrow(enhRAD21bed)
+statspeaks[paste0(MUT,".",FILT),"Promoter_RAD21peaks"]<-nrow(promRAD21bed)
+statspeaks[paste0(MUT,".",FILT),"Enhancer_H3Kpeaks"]<-nrow(enhH3K27bed)
+statspeaks[paste0(MUT,".",FILT),"Promoter_H3Kpeaks"]<-nrow(promH3K27bed)
+}}
+```

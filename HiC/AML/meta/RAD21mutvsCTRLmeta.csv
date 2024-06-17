@@ -1,0 +1,12 @@
+﻿Sample,group,npm1,sex,flt3itd,Dmut,totaltagcount,totalfiltcontacts,short_ID
+16911,CTRL,pos,female,pos,neg,444851648,222425824,ctr_2236
+18136,CTRL,pos,female,pos,neg,306421616,153210808,ctr_1551
+18519,CTRL,pos,male,pos,pos,384101468,192050734,ctr_1747
+19405,CTRL,neg,male,pos,neg,333842981,166921490.5,ctr_3323
+19416,CTRL,neg,male,neg,neg,366704711,183352355.5,ctr_3488
+21047,CTRL,neg,female,neg,neg,318220327,159110163.5,ctr_6246
+21290,CTRL,pos,male,pos,pos,370720187,185360093.5,ctr_5285
+UKR186,RAD21mut,pos,male,pos,pos,334616671,211610023.5,RAD21mut_UKR186
+23039,RAD21mut,pos,female,pos,pos,441068474,237859953.5,RAD21mut_7314
+26830,RAD21mut,pos,female,pos,pos,374359493,264109883.5,RAD21mut_12557
+38455,RAD21mut,pos,female,pos,neg,422309989,290359813.5,RAD21mut_41580a

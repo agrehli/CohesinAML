@@ -1,0 +1,265 @@
+---
+title: "SA2mut Loops in CD34 Cohesin KDs HiC Differential Analysis"
+author: "Alexander Fischer"
+date: "11.02.2022"
+ouptut: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+```
+# load libraries and set paths
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(ggpubr)
+PROJDIR="/misc/data/analysis/project_cohesin/"
+WORKDIR=file.path(PROJDIR,"CD34/HiC_KDs/DeepSeq_Analysis/loops/SA2mutLoopScoring")
+WORKDIRAML=file.path(PROJDIR,"Cohesin_AML/HiC/loops/")
+METADIR=file.path(PROJDIR,"CD34/HiC_KDs/DeepSeq_Analysis")
+KDs=c("SA2KD", "SA1KD", "RAD21KD")
+```
+
+# Prepare counts and normalization factors
+```{r}
+#read in counts, metadata and loop coordinates
+## SA2mut AML results
+SA2mutloops<-read.table(file.path(WORKDIRAML,"DESEQn2total","SA2mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"), header=T,sep = "\t",row.names=1)
+## KD counts
+### read all metadata , counts and total counts into a list
+countslist<-vector(mode = "list", length = 0)
+for (KD in KDs) {
+countslist[[paste0("meta_",KD)]]<-read.table(file=file.path(METADIR,paste0(KD,"vsCTRLmeta.csv")), header=T, sep=",")
+countslist[[paste0("counts_",KD)]]<-read.table(file=file.path(WORKDIR,paste0("tmp.scores.",KD,".SA2mut.txt")), header=T, sep="\t", row.names="Loop")
+countslist[[paste0("loopcoords_",KD)]]<-read.table(file=file.path(WORKDIR,paste0("tmp.loopstartstop.",KD,".SA2mut.txt")), header=T, sep="\t", row.names="Loop")
+countslist[[paste0("normdata_",KD)]]<-read.table(file=file.path(WORKDIR,paste0(KD,"vsCTRL.SA2mutLoops.totalCounts.table.txt")), header=T, sep="\t", row.names="Loop")
+}
+
+
+#integer conversion + rounding
+####NOTE: table needs to be converted to integers for DESEQ
+for (KD in KDs) {
+countslist[[paste0("integer_counts_",KD)]]<-countslist[[paste0("counts_",KD)]]
+i<-c(1:ncol(countslist[[paste0("integer_counts_",KD)]]))
+countslist[[paste0("integer_counts_",KD)]][ , i] <- apply(countslist[[paste0("integer_counts_",KD)]][ , i], 2,function(x) floor((x*10)+.5))
+}
+
+#prepare normalization factors
+for (KD in KDs) {
+ratio.counts<-as.data.frame(countslist[[paste0("normdata_",KD)]][2, ]/countslist[[paste0("normdata_",KD)]][1, ])
+sfuy<-as.data.frame(t(ratio.counts[1,]))
+countslist[[paste0("sfuy_",KD)]]<-sfuy$sum
+}
+```
+
+# DESEQ process for all KDs
+```{r}
+#create a Deseq count table list
+DDSlist<-vector(mode = "list", length = 0)
+for (KD in KDs) {
+DDSlist[[paste0("DDScounttable_",KD)]] <- DESeqDataSetFromMatrix(
+countData = countslist[[paste0("integer_counts_",KD)]],
+colData = countslist[[paste0("meta_",KD)]],
+design = ~ Donor + group)
+}
+# run DESEQ with custom norm2total using the scaling factor
+for (KD in KDs) {
+DDSlist[[paste0("dds_",KD)]]<-DDSlist[[paste0("DDScounttable_",KD)]]
+sizeFactors(DDSlist[[paste0("dds_",KD)]])<-countslist[[paste0("sfuy_",KD)]]
+DDSlist[[paste0("dds_",KD)]] <- estimateDispersionsGeneEst(DDSlist[[paste0("dds_",KD)]])
+dispersions(DDSlist[[paste0("dds_",KD)]]) <- mcols(DDSlist[[paste0("dds_",KD)]])$dispGeneEst
+DDSlist[[paste0("dds_",KD)]]<-nbinomWaldTest(DDSlist[[paste0("dds_",KD)]])
+DDSlist[[paste0("res_",KD)]] <- results(DDSlist[[paste0("dds_",KD)]])
+}
+#summarize number of differential loops in dataframe
+DDSlist[["sigressummary"]]<-data.frame(matrix(ncol=3,nrow=3))
+colnames(DDSlist[["sigressummary"]])<-c("SA2KDvsCTRL","SA1KDvsCTRL","RAD21KDvsCTRL")
+row.names(DDSlist[["sigressummary"]])<-c("total","up.FC1","down.FC1")
+for (KD in KDs) {
+DDSlist[["sigressummary"]]["total",paste0(KD,"vsCTRL")]<-nrow(DDSlist[[paste0("res_",KD)]][ which(DDSlist[[paste0("res_",KD)]]$padj < 0.05 ), ])
+DDSlist[["sigressummary"]]["up.FC1",paste0(KD,"vsCTRL")]<-nrow(DDSlist[[paste0("res_",KD)]][ which(DDSlist[[paste0("res_",KD)]]$padj < 0.05 & DDSlist[[paste0("res_",KD)]]$log2FoldChange > (0.585) ), ])
+DDSlist[["sigressummary"]]["down.FC1",paste0(KD,"vsCTRL")]<-nrow(DDSlist[[paste0("res_",KD)]][ which(DDSlist[[paste0("res_",KD)]]$padj < 0.05 & DDSlist[[paste0("res_",KD)]]$log2FoldChange < (-0.585) ), ])
+}
+
+#write result tables of analyses
+for (KD in KDs) {
+write.table(DDSlist[[paste0("res_",KD)]], file = file.path(WORKDIR,paste0(KD,"vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.txt")), sep = "\t", row.names=T, quote=FALSE)
+##merge resultstable with loopstart-stop-coordinates
+resdf<-read.table (file = file.path(WORKDIR,paste0(KD,"vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.txt")), sep = "\t")
+DDSlist[[paste0("rescoords_",KD)]]<-merge(countslist[[paste0("loopcoords_",KD)]],resdf, by=0)
+write.table (DDSlist[[paste0("rescoords_",KD)]], file = file.path(WORKDIR,paste0(KD,"vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.loopcoords.txt")), sep = "\t", row.names=F, quote=FALSE)
+##also add the normalized counts to the results
+row.names(DDSlist[[paste0("rescoords_",KD)]])<-DDSlist[[paste0("rescoords_",KD)]]$Row.names
+DDSlist[[paste0("rescoords_",KD)]]<-DDSlist[[paste0("rescoords_",KD)]][, -1]
+DDSlist[[paste0("rescoords_counts_",KD)]]<-merge(DDSlist[[paste0("rescoords_",KD)]],counts(DDSlist[[paste0("dds_",KD)]], normalized=T), by=0)
+write.table(DDSlist[[paste0("rescoords_counts_",KD)]], file = file.path(WORKDIR,paste0(KD,"vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.loopcoords.normcounts.txt")), sep = "\t", row.names=F, quote=FALSE)
+}
+
+##add group means
+ctsSA2<-read.table(file=file.path(WORKDIR,paste0("SA2KD","vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.loopcoords.normcounts.txt")),header=T)
+ctsSA2$mean_CTRL<-rowMeans(ctsSA2[,c("X14_siCtrl","X17_siCtrl","X18_siCtrl", "X20_siCtrl", "X21_siCtrl", "X22_siCtrl", "X27_siCtrl","X28_siCtrl")], na.rm=TRUE)
+ctsSA2$mean_SA2KD<-rowMeans(ctsSA2[,c("X14_SA2","X17_SA2","X20_SA2", "X21_SA2","X22_SA2","X28_SA2")], na.rm=TRUE)
+
+ctsSA1<-read.table(file=file.path(WORKDIR,paste0("SA1KD","vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.loopcoords.normcounts.txt")),header=T)
+ctsSA1$mean_CTRL<-rowMeans(ctsSA1[,c("X14_siCtrl","X17_siCtrl","X18_siCtrl", "X20_siCtrl", "X21_siCtrl", "X22_siCtrl", "X27_siCtrl","X28_siCtrl")], na.rm=TRUE)
+ctsSA1$mean_SA1KD<-rowMeans(ctsSA1[,c("X14_SA1","X17_SA1","X20_SA1", "X21_SA1","X27_SA1","X28_SA1")], na.rm=TRUE)
+
+ctsRAD21<-read.table(file=file.path(WORKDIR,paste0("RAD21KD","vsCTRL.SA2mut.loop.scores.DESeq.norm2Total.loopcoords.normcounts.txt")),header=T)
+ctsRAD21$mean_CTRL<-rowMeans(ctsRAD21[,c("X14_siCtrl","X17_siCtrl","X18_siCtrl", "X20_siCtrl", "X21_siCtrl", "X22_siCtrl", "X27_siCtrl","X28_siCtrl")], na.rm=TRUE)
+ctsRAD21$mean_RAD21KD<-rowMeans(ctsRAD21[,c("X18_RAD21","X20_RAD21","X22_RAD21", "X27_RAD21","X28_RAD21")], na.rm=TRUE)
+
+##look at exemplary loops for general overview figure:
+###STAG2 KD
+subset(ctsSA2, chr1=="chr1" & start1 > 166000000 & end2 < 167500000,select=c("Row.names","mean_CTRL","mean_SA2KD"))
+#chr1:166485000-167065000  15.59430   24.49999
+#chr1:166900000-167220000  39.51223   31.85521
+subset(ctsSA2, chr1=="chr1" & start1 > 166500000 & end2 < 167500000,select=c("Row.names","mean_CTRL","mean_SA2KD"))
+#chr1:166910000-167065000 158.62815  140.33373
+subset(ctsSA2, chr1=="chr1" & start1 > 166000000 & end2 < 168000000 & mean_CTRL<mean_SA2KD,select=c("Row.names","mean_CTRL","mean_SA2KD"))
+#chr1:167067500-167450000  78.63009   99.71766
+subset(ctsSA2, chr1=="chr1" & start1 > 167500000 & end2 < 167800000,select=c("Row.names","mean_CTRL","mean_SA2KD"))
+#chr1:167557500-167690000  115.6307   95.08716
+
+###STAG1 KD
+subset(ctsSA1, chr1=="chr1" & start1 > 166000000 & end2 < 168000000 & mean_CTRL>mean_SA1KD,select=c("Row.names","mean_CTRL","mean_SA1KD"))
+#chr1:166485000-167065000  15.59430   14.11844
+#chr1:167067500-167450000  78.63009   66.46807
+subset(ctsSA1, Row.names=="chr1:166910000-167065000",select=c("Row.names","mean_CTRL","mean_SA1KD"))
+#chr1:166910000-167065000  158.6282   159.4452
+subset(ctsSA1, chr1=="chr1" & start1 < 167000000 & start1 > 166000000 & end2 < 168000000 & mean_CTRL>mean_SA1KD,select=c("Row.names","mean_CTRL","mean_SA1KD"))
+#                    Row.names mean_CTRL mean_SA1KD
+#7517 chr1:166485000-167065000  15.59430   14.11844
+#7518 chr1:166895000-167545000  25.40963   21.54694
+subset(ctsSA1, chr1=="chr1" & start1 > 166000000 & end2 < 168000000 & mean_CTRL<mean_SA1KD,select=c("Row.names","mean_CTRL","mean_SA1KD"))
+#chr1:166900000-167220000  39.51223   51.65874
+
+###RAD21 KD
+subset(ctsRAD21, Row.names=="chr1:166900000-167220000",select=c("Row.names","mean_CTRL","mean_RAD21KD"))
+#chr1:166900000-167220000  39.51223     10.64523
+subset(ctsRAD21, Row.names=="chr1:166910000-167065000",select=c("Row.names","mean_CTRL","mean_RAD21KD"))
+#chr1:166910000-167065000  158.6282     43.48682
+subset(ctsRAD21, Row.names=="chr1:167067500-167450000",select=c("Row.names","mean_CTRL","mean_RAD21KD"))
+#chr1:167067500-167450000  78.63009     30.93529
+subset(ctsRAD21, Row.names=="chr1:167557500-167690000",select=c("Row.names","mean_CTRL","mean_RAD21KD"))
+#chr1:167557500-167690000  115.6307     39.85157
+```
+
+# direct comparisons to SA2mut vs CTRL-AML results (based on AML HiC data)
+```{r}
+#merge logFC and padj datasets into one dataframe
+## as pairwise dataframes in list
+Complist<-vector(mode = "list", length = 0)
+for (KD in KDs) {
+Complist[[paste0("Comp_",KD)]]<-merge(DDSlist[[paste0("rescoords_",KD)]][ , c("log2FoldChange","padj")],SA2mutloops[ , c("log2FoldChange","padj")],by="row.names")
+row.names(Complist[[paste0("Comp_",KD)]])<-Complist[[paste0("Comp_",KD)]]$Row.names
+Complist[[paste0("Comp_",KD)]]<-Complist[[paste0("Comp_",KD)]][, -1]
+colnames(Complist[[paste0("Comp_",KD)]])<-c(paste0(KD,"_log2FoldChange"),paste0(KD,"_padj"),"SA2mut_log2FoldChange","SA2mut_padj")
+}
+
+##only for SA2
+SA2comp<-merge(rescoords2[ , c("log2FoldChange","padj")],SA2mutloops[ , c("log2FoldChange","padj")],by="row.names")
+row.names(SA2comp)<-SA2comp$Row.names
+SA2comp<-SA2comp[, -1]
+colnames(SA2comp)<-c("SA2KD_log2FoldChange","SA2KD_padj","SA2mut_log2FoldChange","SA2mut_padj")
+
+```
+
+
+
+# Correlation of logFC of SA2mut loops in KDvsCTRLHSPCS vs SA2mutvsCTRLAML
+```{r}
+# calculate pearson and spearman correlations
+for (KD in KDs) {
+Complist[[paste0("Pcorr_Pearson",KD)]]<-cor.test(Complist[[paste0("Comp_",KD)]][[paste0(KD,"_log2FoldChange")]], Complist[[paste0("Comp_",KD)]]$SA2mut_log2FoldChange,  method = "pearson", use = "complete.obs")
+Complist[[paste0("Pcorr_Spearman",KD)]]<-cor.test(Complist[[paste0("Comp_",KD)]][[paste0(KD,"_log2FoldChange")]], Complist[[paste0("Comp_",KD)]]$SA2mut_log2FoldChange,  method = "spearman", use = "complete.obs")
+}
+corrdf<-data.frame()
+for (KD in KDs) {
+corrdf[KD,"Pearson"]<-Complist[[paste0("Pcorr_Pearson",KD)]]$estimate
+corrdf[KD,"Spearman"]<-Complist[[paste0("Pcorr_Spearman",KD)]]$estimate
+}
+#add significance categories to dataframe for coloring dots in scatter
+for (KD in KDs) {
+Complist[[paste0("Comp_",KD)]]$sigcat<- "NA"
+Complist[[paste0("Comp_",KD)]]$sigcat[Complist[[paste0("Comp_",KD)]][[paste0(KD,"_padj")]] < 0.05 & Complist[[paste0("Comp_",KD)]]$SA2mut_padj < 0.05] <- "both" 
+Complist[[paste0("Comp_",KD)]]$sigcat[Complist[[paste0("Comp_",KD)]][[paste0(KD,"_padj")]] < 0.05 & Complist[[paste0("Comp_",KD)]]$SA2mut_padj > 0.05] <- "KDonly" 
+Complist[[paste0("Comp_",KD)]]$sigcat[Complist[[paste0("Comp_",KD)]][[paste0(KD,"_padj")]] > 0.05 & Complist[[paste0("Comp_",KD)]]$SA2mut_padj < 0.05] <- "MUTonly" 
+Complist[[paste0("Comp_",KD)]]$sigcat[Complist[[paste0("Comp_",KD)]][[paste0(KD,"_padj")]] > 0.05 & Complist[[paste0("Comp_",KD)]]$SA2mut_padj > 0.05] <- "none" 
+}
+##subset categories
+for (KD in KDs) {
+Complist[[paste0("Comp_all_sign_",KD)]]<-subset(Complist[[paste0("Comp_",KD)]],Complist[[paste0("Comp_",KD)]]$sigcat=="both"|Complist[[paste0("Comp_",KD)]]$sigcat=="KDonly" | Complist[[paste0("Comp_",KD)]]$sigcat=="MUTonly")
+Complist[[paste0("Comp_MUTsig_",KD)]]<-subset(Complist[[paste0("Comp_",KD)]],Complist[[paste0("Comp_",KD)]]$sigcat=="both"| Complist[[paste0("Comp_",KD)]]$sigcat=="MUTonly")
+Complist[[paste0("Comp_KDsig_",KD)]]<-subset(Complist[[paste0("Comp_",KD)]],Complist[[paste0("Comp_",KD)]]$sigcat=="both"| Complist[[paste0("Comp_",KD)]]$sigcat=="KDonly")
+Complist[[paste0("both_sig_",KD)]]<-subset(Complist[[paste0("Comp_",KD)]],Complist[[paste0("Comp_",KD)]]$sigcat=="both")
+}
+#subset correlations
+sigcats<-c("Comp_all_sign_","Comp_MUTsig_","Comp_KDsig_","both_sig_")
+corrdf2<-data.frame()
+for (KD in KDs) {
+  for (cat in sigcats) {
+Complist[[paste0(cat,KD,"_Pearson")]]<-cor.test(Complist[[paste0(cat,KD)]][[paste0(KD,"_log2FoldChange")]], Complist[[paste0(cat,KD)]]$SA2mut_log2FoldChange,  method = "pearson", use = "complete.obs")
+Complist[[paste0(cat,KD,"_Spearman")]]<-cor.test(Complist[[paste0(cat,KD)]][[paste0(KD,"_log2FoldChange")]], Complist[[paste0(cat,KD)]]$SA2mut_log2FoldChange,  method = "spearman", use = "complete.obs")
+corrdf2[KD,paste0(cat,"Pearson")]<-Complist[[paste0(cat,KD,"_Pearson")]]$estimate
+corrdf2[KD,paste0(cat,"Spearman")]<-Complist[[paste0(cat,KD,"_Spearman")]]$estimate
+}}
+```
+# Generate scatter plots highlighting significant loops and include trendlines + correlation stats
+```{r}
+#plot all loops: SA2KDvsCTRL vs SA2mutvsCTRL ggplot2 solution for maxiumum control of parameters
+spearmanALL<-paste0("R = ",round(Complist[["Pcorr_Spearman","SA2KD"]]$estimate,3)," P < 2.2e-16 ")
+spearmanSigBoth<-paste0("R = ",round(Complist[["both_sig_SA2KD_Spearman"]]$estimate,3)," P < 2.2e-16 ")
+
+Complist[[paste0("Comp_","SA2KD")]]$sigcat<-factor(Complist[[paste0("Comp_","SA2KD")]]$sigcat,levels=c("none" ,"both","KDonly","MUTonly"))
+p<-ggplot(data=Complist[[paste0("Comp_","SA2KD")]], aes(x = SA2mut_log2FoldChange, y = SA2KD_log2FoldChange))+
+geom_point(aes(alpha = sigcat,color = sigcat))+
+geom_point(data=Complist[[paste0("both_sig_","SA2KD")]],aes(x = SA2mut_log2FoldChange, y = SA2KD_log2FoldChange,color = sigcat,alpha=sigcat))+
+scale_alpha_manual(values=c("none" = 0.5, "both" =   1, "KDonly" = 0.5,"MUTonly" = 0.5),guide = 'none')+
+scale_color_manual(values=c("none" = "grey", "both" =  "darkblue", "KDonly" = "azure2","MUTonly" = "palegreen1"),
+labels=c("none","both","SA2KD only","SA2mut only"),name="Padj. < 0.05 in: ")+
+geom_smooth(data=Complist[[paste0("both_sig_","SA2KD")]],aes(x = SA2mut_log2FoldChange, y = SA2KD_log2FoldChange),method='lm')+
+geom_smooth(data=Complist[[paste0("Comp_","SA2KD")]], aes(x = SA2mut_log2FoldChange, y = SA2KD_log2FoldChange),method='lm',color="black")+
+xlab("log2FC in STAG2 mut AML \n vs CTRL AML")+ylab("log2FC in STAG2 KD \n vs CTRL HSPCs")+
+annotate("text", x=2, y=3.5, label=spearmanALL , size=rel(6),color="black",fontface="italic")+
+annotate("text", x=2, y=3.0, label=spearmanSigBoth , size=rel(6),color="darkblue",fontface="italic")+
+#ylim(-3.8,4)+xlim(-3.8,3.8)+
+theme_classic()+
+theme(legend.position = "bottom",
+        axis.title = element_text(size = rel(2)),
+        axis.text = element_text(size = rel(2)),
+        legend.text = element_text(size = rel(1.2)),
+        legend.title = element_text(size = rel(1.2)),
+      )
+
+ggsave(p,file=file.path(WORKDIR,"SA2mut.vs.SA2KD.logFC.SA2mutLoopset.Spearman.bothandall.pdf"),height=5,width=5.5)
+
+
+
+#plot all loops: SA1KDvsCTRL vs SA2mutvsCTRL ggplot2 solution for maxiumum control of parameters
+spearmanALL<-paste0("R = ",round(Complist[["Pcorr_SpearmanSA1KD"]]$estimate,3)," P < 2.2e-16 ")
+spearmanSigBoth<-paste0("R = ",round(Complist[["both_sig_SA1KD_Spearman"]]$estimate,3)," P < 2.2e-16 ")
+
+Complist[[paste0("Comp_","SA1KD")]]$sigcat<-factor(Complist[[paste0("Comp_","SA1KD")]]$sigcat,levels=c("none" ,"both","KDonly","MUTonly"))
+p2<-ggplot(data=Complist[[paste0("Comp_","SA1KD")]], aes(x = SA2mut_log2FoldChange, y = SA1KD_log2FoldChange))+
+geom_point(aes(alpha = sigcat,color = sigcat))+
+geom_point(data=Complist[[paste0("both_sig_","SA1KD")]],aes(x = SA2mut_log2FoldChange, y = SA1KD_log2FoldChange,color = sigcat,alpha=sigcat))+
+scale_alpha_manual(values=c("none" = 0.5, "both" =   1, "KDonly" = 0.5,"MUTonly" = 0.5),guide = 'none')+
+scale_color_manual(values=c("none" = "grey", "both" =  "darkgoldenrod3", "KDonly" = "lightgoldenrodyellow","MUTonly" = "palegreen1"),
+labels=c("none","both","SA1KD only","SA2mut only"),name="Padj. < 0.05 in: ")+
+geom_smooth(data=Complist[[paste0("both_sig_","SA1KD")]],aes(x = SA2mut_log2FoldChange, y = SA1KD_log2FoldChange),method='lm')+
+geom_smooth(data=Complist[[paste0("Comp_","SA1KD")]], aes(x = SA2mut_log2FoldChange, y = SA1KD_log2FoldChange),method='lm',color="black")+
+xlab("log2FC in STAG2 mut AML \n vs CTRL AML")+ylab("log2FC in STAG1 KD \n vs CTRL HSPCs")+
+annotate("text", x=2, y=3.5, label=spearmanALL , size=rel(6),color="black",fontface="italic")+
+annotate("text", x=2, y=3.0, label=spearmanSigBoth , size=rel(6),color="darkblue",fontface="italic")+
+#ylim(-3.8,4)+xlim(-3.8,3.8)+
+theme_classic()+
+theme(legend.position = "bottom",
+        axis.title = element_text(size = rel(2)),
+        axis.text = element_text(size = rel(2)),
+        legend.text = element_text(size = rel(1.2)),
+        legend.title = element_text(size = rel(1.2)),
+      )
+
+ggsave(p2,file=file.path(WORKDIR,"SA2mut.vs.SA1KD.logFC.SA2mutLoopset.Spearman.bothandall.pdf"),height=5,width=5.5)
+```

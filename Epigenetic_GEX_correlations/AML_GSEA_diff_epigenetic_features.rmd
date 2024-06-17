@@ -1,0 +1,575 @@
+---
+title: "Gene Set enrichments in Cohesin-mutant AMLs for genes associated with (differnetial) epigenetic features"
+author: "Alexander Fischer"
+date: "13 07 2021"
+output: html_document
+---
+
+# Loading libraries needed for data processing and analysis
+```{r, echo = FALSE, include = FALSE}
+library(edgeR)
+library(GGally)
+library(ggplot2)
+library(ggrepel)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(ggpubr)
+library(Rtsne)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(pheatmap)
+library(cowplot)
+```
+# Defining path variables at the start
+```{r}
+DIR_DATA="/misc/data"
+PROJDIR=file.path(DIR_DATA,"analysis/project_cohesin/")
+#RNAseq directories and files
+WORKDIRAML=file.path(PROJDIR,"Cohesin_AML/RNAseq")
+METADIR=file.path(WORKDIRAML,"Metadata") #input direcotry should contain the metadata files
+RPGDIR=file.path(DIR_DATA,"processedData/mapping/RNA/GRCh38/RNAseq/Cohesin_AML") #input directory with the .txt files containing the reads per gene information
+ANALDIR=file.path(WORKDIRAML,"Analysis/Resulttables") #output of analysis results
+FIGDIR=file.path(WORKDIRAML,"Analysis/Plots") #output of figure directories
+ANALn="RNAseq_Cohesin_AML_AF3" #Name the particular analysis you are about to conduct
+STIDp="/misc/software/ngs/genome/sequence/GRCh38.PRI_p10/STAR_transcriptIDshort.txt" #this is the path to the ShortTranscriptID for a fully functional annotation of the RCT
+
+#directories with epigentic data to integrate:
+CHIPDIR=file.path(PROJDIR,"Cohesin_AML/ChIP_analysis")
+H3Kdir=file.path(CHIPDIR,"H3K27ac/diffPeaks")
+TSSdir=file.path(PROJDIR,"Cohesin_AML/HiC/loops/differentialanchorsn2t/H3K27overlap/TSSanchorOverlap")
+
+```
+
+# Reading in metadata and counts
+```{r}
+#reading in the metadata file as a pilot
+metad<-read.table(file.path(METADIR, "RNAseq_Metadata_AML_STAG2_RAD21.txt"),sep = "\t",header=TRUE)
+counts<-read.table(file.path(WORKDIRAML,"RNAseq_AML_STAG2_RAD21_counts.raw.txt"),header=TRUE)
+#generate a genes datafram for the DGEList object
+genens<-strsplit2(rownames(counts),"$",fixed = TRUE)[,2] #extract gene names from the ShortTranscriptID containing the gene names
+genes.df<-as.data.frame(strsplit2(rownames(counts),"[$]"))
+colnames(genes.df)<-c("EnsemblID","GeneSymbol","Length","GeneType")
+genes.df$EnsemblID<-as.character(genes.df$EnsemblID)
+genes.df$GeneSymbol<-as.character(genes.df$GeneSymbol)
+genes.df$Length<-as.numeric(as.character(genes.df$Length)) 
+genes.df$GeneType<-as.character(genes.df$GeneType)
+head(genes.df)
+```
+
+# GSEA in STAG2mut vs CTRL AMLs
+## perform edgeR analysis as in previous RNAseq script
+```{r}
+#select only STAG2 patients and all CTRLs
+STAG2pat<-colnames(as.matrix(select(as.data.frame(counts), matches('STAG2|_CTRL'))))
+#subset counts
+counts_selSTAG2<-counts[ , which(colnames(counts) %in% STAG2pat)]
+#subset metadata
+metad_selSTAG2<-subset(metad, Sample_Name %in% STAG2pat)
+#subset variables
+MutationGroup_STAG2pat<-factor(metad_selSTAG2$group,levels=c("STAG2","CTRL"))
+sex_selSA2<-factor(metad_selSTAG2$sex)
+RUNX1mut_selSA2<-factor(metad_selSTAG2$RUNX1)
+NPM1mut_selSA2<-factor(metad_selSTAG2$NPM1)
+FLT3ITDmut_selSA2<-factor(metad_selSTAG2$FLT3_ITD)
+dmut_selSA2<-factor(metad_selSTAG2$DNMT3A)
+
+#creating DGLIST object for STAG2 subset
+dgel_selSTAG2 <- DGEList(counts = counts_selSTAG2, group = MutationGroup_STAG2pat, genes = genes.df)
+keep <- rowSums(cpm(dgel_selSTAG2)>1) >= 4 
+dgel_selSTAG2 <- dgel_selSTAG2[keep, , keep.lib.sizes=FALSE]
+dgel_selSTAG2 <- calcNormFactors(dgel_selSTAG2)
+#estimate dispersion
+design_DEGs_STAG2pat <- model.matrix(~0+MutationGroup_STAG2pat+sex_selSA2+NPM1mut_selSA2+RUNX1mut_selSA2+FLT3ITDmut_selSA2)
+dgel_selSTAG2<- estimateDisp(dgel_selSTAG2,design_DEGs_STAG2pat,robust = TRUE)
+dgel_selSTAG2$common.dispersion 
+#Fitting genewise glms
+fitSA2<-glmQLFit(dgel_selSTAG2,design_DEGs_STAG2pat)
+comppair = "MutationGroup_STAG2patSTAG2-MutationGroup_STAG2patCTRL"
+#make Contrasts an run qlf test
+conSA2mut <- makeContrasts(comppair, levels = design_DEGs_STAG2pat)
+qlfSA2 <-glmQLFTest(fitSA2,contrast = conSA2mut)
+qstatSA2 <- topTags(qlfSA2, n = Inf)
+```
+
+## Get lists of genes associated with differential epigentic features identified in STAG2-mutant AMLs
+```{r}
+#RAD21 diffpeaks - direct TSS overlaps (RAD21 peak or RAD21-associated promoter)
+Filts2<-c("2folddown", "2foldup")
+types2<-c("Peaks_DESEQ", "stringentPeaks_DESEQ")
+diffRADgenes<-vector(mode = "list", length = 0)
+for (FILT in Filts2){
+  for (type in types2){
+#direct TSS overlap
+path<-file.path(CHIPDIR,"TSSOverlap",paste0("SA2mutvsCTRL.RAD21.", type, ".model.",FILT,".TSS.bed"))
+diffRADgenes[[paste0("RAD21.",type,".",FILT,".SA2mut.TSSoverlap")]]<-read.table(path, header=F, sep="\t",fill = TRUE,comment.char = "#",quote = "\"")
+#TSS enhancer overlap
+path<-file.path(CHIPDIR,"diffPeakAssEnh",paste0("SA2mutvsCTRL.RAD21.", type, ".model.",FILT,".AssEnhancers.TSS.bed"))
+diffRADgenes[[paste0("RAD21.",type,".",FILT,".SA2mut.Enhancer.TSSoverlap")]]<-read.table(path,header=F, sep="\t",fill = TRUE,comment.char = "#",quote = "\"")
+}}
+
+#H3K27ac diffpeak associated genes TSS overlaps
+typesH3K<-c("upperQ0.95.cqn.edgeR")
+diffH3Kgenes<-vector(mode = "list", length = 0)
+for (FILT in Filts2){
+  for (type in typesH3K){
+#direct TSS overlap
+path<-file.path(H3Kdir,"TSSOverlap",paste0("SA2mutvsCTRL.H3K27ac.Peaks_", type, ".",FILT,".TSS.bed"))
+diffH3Kgenes[[paste0("H3K27ac.",type,".",FILT,".SA2mut.TSSoverlap")]]<-read.table(path, header=F, sep="\t",fill = TRUE,comment.char = "#",quote = "\"")
+}}
+
+
+#Differential regulatory Loop Anchor-associated genes: TSS in all H3K27ac diff loop anchors
+Filts<-c("up.FC1", "down.FC1","up.FC2","down.FC2")
+TSS_diffEPanch<-vector(mode = "list", length = 0)
+#names(TSS_diffEPanch)<-names2
+for (FILT in Filts){
+path<-file.path(TSSdir,paste0("SA2mut","vsCTRL.loopAnchors.red.", FILT, ".CohesinAssEnhancers.Overlap.TSS.bed"))
+newentry<-read.table(path, header=F, sep="\t")
+TSS_diffEPanch[[paste0("CohesinAssEnhancers.",FILT,".SA2mut")]]<-newentry
+}
+```
+
+## Create Indices for the genes associated with differential epigentic features identified in STAG2-mutant AMLs
+```{r}
+#RAD21 diff peak ass. genes
+Filts2<-c("2folddown", "2foldup")
+types2<-c("Peaks_DESEQ", "stringentPeaks_DESEQ")
+for (FILT in Filts2){
+  for (type in types2){
+diffRADgenes[[paste0("Ind.RAD21.",type,".",FILT,".SA2mut.TSSoverlap")]]<-fitSA2$genes[[2]] %in% diffRADgenes[[paste0("RAD21.",type,".",FILT,".SA2mut.TSSoverlap")]]$V4
+diffRADgenes[[paste0("Ind.RAD21.",type,".",FILT,".SA2mut.Enhancer.TSSoverlap")]]<-fitSA2$genes[[2]] %in% diffRADgenes[[paste0("RAD21.",type,".",FILT,".SA2mut.Enhancer.TSSoverlap")]]$V4
+}}
+####pairs of indices 
+cats<-c("TSSoverlap", "Enhancer.TSSoverlap")
+for (type in types2){
+ for (cat in cats){ 
+diffRADgenes[[paste0("IndPair.RAD21.",type,".SA2mut.",cat)]]<-list(diffRADgenes[[paste0("Ind.RAD21.",type,".2folddown.SA2mut.",cat)]],diffRADgenes[[paste0("Ind.RAD21.",type,".2foldup.SA2mut.",cat)]])
+names(diffRADgenes[[paste0("IndPair.RAD21.",type,".SA2mut.",cat)]])<-c(paste0("Ind.RAD21.",type,".2folddown.SA2mut.",cat),paste0("Ind.RAD21.",type,".2foldup.SA2mut.",cat))
+}}
+
+
+#H3K27ac diff peak ass. genes and TSS overlaps
+for (FILT in Filts2){
+  for (type in typesH3K){
+diffH3Kgenes[[paste0("Ind.H3K27ac.",type,".",FILT,".SA2mut.TSSoverlap")]]<-fitSA2$genes[[2]] %in% diffH3Kgenes[[paste0("H3K27ac.",type,".",FILT,".SA2mut.TSSoverlap")]]$V4
+}}
+####pairs of indices 
+catsH3K<-c("TSSoverlap")
+for (type in typesH3K){
+ for (cat in catsH3K){ 
+diffH3Kgenes[[paste0("IndPair.H3K27ac.",type,".SA2mut.",cat)]]<-list(diffH3Kgenes[[paste0("Ind.H3K27ac.",type,".2folddown.SA2mut.",cat)]],diffH3Kgenes[[paste0("Ind.H3K27ac.",type,".2foldup.SA2mut.",cat)]])
+names(diffH3Kgenes[[paste0("IndPair.H3K27ac.",type,".SA2mut.",cat)]])<-c(paste0("Ind.H3K27ac.",type,".2folddown.SA2mut.",cat),paste0("Ind.H3K27ac.",type,".2foldup.SA2mut.",cat))
+}}
+
+
+#EP diff anch TSS: add indices to list
+for (FILT in Filts){
+TSS_diffEPanch[[paste0("Ind.","CohesinAssEnhancers.",FILT,".SA2mut")]]<-fitSA2$genes[[2]] %in% TSS_diffEPanch[[paste0("CohesinAssEnhancers.",FILT,".SA2mut")]]$V4
+}
+####paired index for GESEA
+TSS_diffEPanch[[paste0("IndPair.TSS_diffEPanch.FC1")]]<-list(TSS_diffEPanch[[paste0("Ind.","CohesinAssEnhancers.up.FC1.SA2mut")]],TSS_diffEPanch[[paste0("Ind.","CohesinAssEnhancers.down.FC1.SA2mut")]])
+names(TSS_diffEPanch[[paste0("IndPair.TSS_diffEPanch.FC1")]])<-c(paste0("Ind.","CohesinAssEnhancers.up.FC1.SA2mut"),paste0("Ind.","CohesinAssEnhancers.down.FC1.SA2mut"))
+```
+
+## Perfom GSEA using limma "fry" function for Indices in the contrast of STAG2-mutant vs CTRL AML
+### RAD21 diffpeak genes
+```{r}
+dir.create(file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","GSEAresults"))
+dir.create(file.path(FIGDIR,ANALn,"GSEA"))
+
+# diff RAD21 associated genes
+GSEA_RAD21_new<-vector(mode = "list", length = 0)
+for (type in types2){
+ for (cat in cats){ 
+GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]]<-fry(dgel_selSTAG2, index=diffRADgenes[[paste0("IndPair.RAD21.",type,".SA2mut.",cat)]], design=design_DEGs_STAG2pat, contrast=conSA2mut)
+}}
+GSEA_RAD21_new_df<-as.data.frame(do.call(rbind, GSEA_RAD21_new))
+write.table(GSEA_RAD21_new_df, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","GSEAresults","GSEA_RAD21new_Summary.txt"), sep = "\t", quote=FALSE)
+GSEA_RAD21_new_df
+
+#generate barcode plots showing the statistics
+for (type in types2){
+ for (cat in cats){ 
+pdf(file=file.path(FIGDIR,ANALn,"GSEA",paste0("GSEA_STAG2pat_RAD21diffpeak",type,".",cat,".ass.genes.pdf")), height=6, width=6)
+barcodeplot(qlfSA2$table$logFC, 
+            index=diffRADgenes[[paste0("Ind.RAD21.",type,".2foldup.SA2mut.",cat)]], 
+            index2=diffRADgenes[[paste0("Ind.RAD21.",type,".2folddown.SA2mut.",cat)]], 
+            labels=c("CTRL","SA2mut"), 
+            xlab = bquote(log[2]*"FC in RNAseq"), 
+            main=paste0("SA2mut: genes associated with differential RAD21 peaks", "(",type,")", "by", cat), cex.main=0.65,
+            col.bars=c("seagreen3", "firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(3,5,bquote('green bars: genes with increased RAD21 '~'('*.(GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]][paste0("Ind.RAD21.",type,".2foldup.SA2mut.",cat),"NGenes"])*')'), adj = c(1,.5))
+text(3,4.5,bquote(italic(P)[adj.]*"<"*.(GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]][paste0("Ind.RAD21.",type,".2foldup.SA2mut.",cat),"FDR"])*'('*.(GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]][paste0("Ind.RAD21.",type,".2foldup.SA2mut.",cat),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-4,-5,bquote('red bars: genes with reduced RAD21 '~'('*.(GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]][paste0("Ind.RAD21.",type,".2folddown.SA2mut.",cat),"NGenes"])*')'), adj = c(0,.5))
+text(-4,-4.5,bquote(italic(P)[adj.]*"<"*.(GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]][paste0("Ind.RAD21.",type,".2folddown.SA2mut.",cat),"FDR"])*'('*.(GSEA_RAD21_new[[paste0("GSEA.RAD21.",type,".SA2mut.",cat)]][paste0("Ind.RAD21.",type,".2folddown.SA2mut.",cat),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+```
+
+### H3K27ac diffpeak genes
+```{r}
+#diff H3K27ac associated genes
+dir.create(file.path(FIGDIR,ANALn,"GSEA","GSEA_H3K27ac"))
+
+GSEA_H3K27ac_new<-vector(mode = "list", length = 0)
+for (type in typesH3K){
+ for (cat in catsH3K){ 
+GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]]<-fry(dgel_selSTAG2, index=diffH3Kgenes[[paste0("IndPair.H3K27ac.",type,".SA2mut.",cat)]], design=design_DEGs_STAG2pat, contrast=conSA2mut)
+}}
+GSEA_H3K27ac_new_df<-as.data.frame(do.call(rbind, GSEA_H3K27ac_new))
+write.table(GSEA_H3K27ac_new_df, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","GSEAresults","GSEA_H3K27acnew_Summary.txt"), sep = "\t", quote=FALSE)
+#all vs all comp
+GSEA_H3K27ac_new_allvsall<-fry(dgel_selSTAG2, index=diffH3KgenesInd, design=design_DEGs_STAG2pat, contrast=conSA2mut)
+write.table(GSEA_H3K27ac_new_allvsall, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","GSEAresults","GSEA_H3K27acnew_allvsall.Summary.txt"), sep = "\t", col.names=NA, quote=FALSE)
+
+#barcodeplots
+for (type in typesH3K){
+ for (cat in catsH3K){ 
+pdf(file=file.path(FIGDIR,ANALn,"GSEA","GSEA_H3K27ac",paste0("GSEA_STAG2patH3K27acdiffpeak",type,".",cat,".ass.genes.pdf")), height=6, width=6)
+barcodeplot(qlfSA2$table$logFC, 
+            index=diffH3Kgenes[[paste0("Ind.H3K27ac.",type,".2foldup.SA2mut.",cat)]], 
+            index2=diffH3Kgenes[[paste0("Ind.H3K27ac.",type,".2folddown.SA2mut.",cat)]], 
+            labels=c("CTRL","SA2mut"), 
+            xlab = bquote(log[2]*"FC in RNAseq"), 
+            main=paste0("SA2mut: genes associated with differential H3K27ac peaks", "(",type,")", "by", cat), cex.main=0.65,
+            col.bars=c("seagreen3", "firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(3,5,bquote('green bars: genes with increased H3K27ac '~'('*.(GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]][paste0("Ind.H3K27ac.",type,".2foldup.SA2mut.",cat),"NGenes"])*')'), adj = c(1,.5))
+text(3,4.5,bquote(italic(P)[adj.]*"<"*.(GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]][paste0("Ind.H3K27ac.",type,".2foldup.SA2mut.",cat),"FDR"])*'('*.(GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]][paste0("Ind.H3K27ac.",type,".2foldup.SA2mut.",cat),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-4,-5,bquote('red bars: genes with reduced H3K27ac '~'('*.(GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]][paste0("Ind.H3K27ac.",type,".2folddown.SA2mut.",cat),"NGenes"])*')'), adj = c(0,.5))
+text(-4,-4.5,bquote(italic(P)[adj.]*"<"*.(GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]][paste0("Ind.H3K27ac.",type,".2folddown.SA2mut.",cat),"FDR"])*'('*.(GSEA_H3K27ac_new[[paste0("GSEA.H3K27ac.",type,".SA2mut.",cat)]][paste0("Ind.H3K27ac.",type,".2folddown.SA2mut.",cat),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+```
+
+### EP-loop anchor genes
+```{r}
+##EP anch TSS overlap genes fry
+gseEPanch_TSS_FC1<- fry(dgel_selSTAG2, index=TSS_diffEPanch[["IndPair.TSS_diffEPanch.FC1"]], design=design_DEGs_STAG2pat, contrast=conSA2mut)
+gseEPanch_TSS_FC1
+write.table(as.data.frame(gseEPanch_TSS_FC1), file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","GSEAresults","GSEA_diff.EP.TSS_Summary.txt"), sep = "\t", quote=FALSE)
+
+
+##EP anch TSS overlap genes barcodeplot
+pdf(file=file.path(FIGDIR,ANALn,"GSEA","GSEA_TSS_diffEPanch_SA2mut.barcodeplot.pdf"), height=6, width=6)
+barcodeplot(qlfSA2$table$logFC, 
+            index=TSS_diffEPanch[["Ind.CohesinAssEnhancers.up.FC1.SA2mut"]], 
+            index2=TSS_diffEPanch[["Ind.CohesinAssEnhancers.down.FC1.SA2mut"]], 
+            labels=c("CTRL","SA2mut"), 
+            xlab = bquote(log[2]*"FC in RNAseq"), 
+            main="SA2mut: TSS ass. with diff. E-P anchors", 
+            col.bars=c("seagreen", "firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(3,5,bquote('green bars: genes with TSS at strengthened E-P anchors '~'('*.(gseEPanch_TSS_FC1["Ind.CohesinAssEnhancers.up.FC1.SA2mut","NGenes"])*')'), adj = c(1,.5),cex=1)
+text(3,4.5,bquote(italic(P)[adj.]*"<"*.(gseEPanch_TSS_FC1["Ind.CohesinAssEnhancers.up.FC1.SA2mut","FDR"])*'('*.(gseEPanch_TSS_FC1["Ind.CohesinAssEnhancers.up.FC1.SA2mut","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-4,-5,bquote('red bars: genes with TSS at weakened E-P anchors  '~'('*.(gseEPanch_TSS_FC1["Ind.CohesinAssEnhancers.down.FC1.SA2mut","NGenes"])*')'), adj = c(0,.5),,cex=1)
+text(-4,-4.5,bquote(italic(P)[adj.]*"<"*.(gseEPanch_TSS_FC1["Ind.CohesinAssEnhancers.down.FC1.SA2mut","FDR"])*'('*.(gseEPanch_TSS_FC1["Ind.CohesinAssEnhancers.down.FC1.SA2mut","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+```
+
+# Direct correlations of all gene expression and RAD21 fold-changes in STAG2mut vs CTRL AMLs
+###this analyis is a required input for the multivariate correlation analysis!
+```{r}
+dir.create(file.path(FIGDIR,ANALn,"correlationplots"))
+
+#read in intersection of all TSS with stringent RAD21 peaks
+intersTSSRADstr<-read.table(file=file.path(CHIPDIR,"TSSOverlap","All.CoAML.RAD21stringentPeaks.TSS.bed"), header=F, sep="\t",fill = TRUE,comment.char = "#",quote = "\"") 
+colnames(intersTSSRADstr)<-c("TSSchr","TSSstart","TSSstop","GeneSymbol","V5","TssStrand","Peakchr","Peakstart","Peakstop","PeakID","Intersection","Peakstrand")
+#filter for overlapping features
+intersTSSRADstr<-subset(intersTSSRADstr,intersTSSRADstr$Intersection==1)
+#Add a peak-Genename ID column
+intersTSSRADstr$Peak_Gene<-paste0(intersTSSRADstr$PeakID,"_",intersTSSRADstr$GeneSymbol) #41169
+#remove duplicates
+intersTSSRADstrdist<-distinct(intersTSSRADstr,Peak_Gene, .keep_all= TRUE) #17292
+row.names(intersTSSRADstrdist)<-intersTSSRADstrdist$Peak_Gene
+#add FC and FDR of genes
+qstat_SA2vs.CTRL.short<-qstatSA2[,c("GeneSymbol","logCPM","logFC","FDR")]
+colnames(qstat_SA2vs.CTRL.short)<-c("GeneSymbol","logCPM_RNA","logFC_RNA","FDR_RNA")
+intersTSSRADstrdist.expr<-merge(qstat_SA2vs.CTRL.short, intersTSSRADstrdist,by="GeneSymbol") #14930
+#add FC and FDR of RAD21 peaks (DESEQ norm)
+RAD21Chip_qstat<-read.table(file=file.path(CHIPDIR,"SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), header=T, sep="\t",fill = TRUE,comment.char = "#",quote = "\"")
+RAD21Chip_qstat<-RAD21Chip_qstat[,c("Row.names","log2FoldChange","padj")]
+colnames(RAD21Chip_qstat)<-c("PeakID","logFC_RAD21","FDR_RAD21")
+intersTSSRADstrdist.expr.Chip<-merge(intersTSSRADstrdist.expr, RAD21Chip_qstat,by="PeakID") #14523
+#make categories for statistical significance of changes
+intersTSSRADstrdist.expr.Chip$sigcat<- "NA"
+intersTSSRADstrdist.expr.Chip$sigcat[intersTSSRADstrdist.expr.Chip$FDR_RAD21 < 0.05 & intersTSSRADstrdist.expr.Chip$FDR_RNA < 0.05] <- "both" 
+intersTSSRADstrdist.expr.Chip$sigcat[intersTSSRADstrdist.expr.Chip$FDR_RAD21 < 0.05 & intersTSSRADstrdist.expr.Chip$FDR_RNA > 0.05] <- "RAD21only" 
+intersTSSRADstrdist.expr.Chip$sigcat[intersTSSRADstrdist.expr.Chip$FDR_RAD21 > 0.05 & intersTSSRADstrdist.expr.Chip$FDR_RNA < 0.05] <- "GEXonly"
+intersTSSRADstrdist.expr.Chip$sigcat[is.na(intersTSSRADstrdist.expr.Chip$FDR_RAD21) & intersTSSRADstrdist.expr.Chip$FDR_RNA < 0.05] <- "GEXonly" 
+intersTSSRADstrdist.expr.Chip$sigcat[intersTSSRADstrdist.expr.Chip$FDR_RAD21 > 0.05 & intersTSSRADstrdist.expr.Chip$FDR_RNA > 0.05] <- "none"
+intersTSSRADstrdist.expr.Chip$sigcat[is.na(intersTSSRADstrdist.expr.Chip$FDR_RAD21)& intersTSSRADstrdist.expr.Chip$FDR_RNA > 0.05] <- "none" 
+table(intersTSSRADstrdist.expr.Chip$sigcat) #shows a summary of the categories
+
+#save the table ###this table will be used in the multivariate correlation analysis script!
+write.table(intersTSSRADstrdist.expr.Chip,file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","STAG2mut.TSS.GEXFC.vs.str.RAD21peak.FC.txt"),sep="\t",quote=FALSE,row.names=TRUE)
+
+#plot all genes vs stringent peaks SA2mut
+##use spearman correlation
+###all loci
+spearmanALLstr<-cor.test(intersTSSRADstrdist.expr.Chip$logFC_RAD21, intersTSSRADstrdist.expr.Chip$logFC_RNA,  method = "spearman", use = "complete.obs",exact=FALSE)
+spearmanALLlabstr<-paste0("R = ",round(spearmanALLstr$estimate,3), " P < ", format(spearmanALLstr$p.value,scientific=TRUE,digits=3))
+###only loci where both GEX and RAD21 changes are significant
+spearmanSigBothstr<-cor.test(intersTSSRADstrdist.expr.Chip.bothsigOnly$logFC_RAD21, intersTSSRADstrdist.expr.Chip.bothsigOnly$logFC_RNA,  method = "spearman", use = "complete.obs",exact=FALSE)
+spearmanSigBothlabstr<-paste0("R = ",round(spearmanSigBothstr$estimate,3), " P < ", format(spearmanSigBothstr$p.value,scientific=TRUE,digits=3))
+
+#generate scatter plot
+p<-ggplot(data=intersTSSRADstrdist.expr.Chip, aes(x = logFC_RAD21, y = logFC_RNA))+
+geom_point(aes(alpha = sigcat,color = sigcat))+
+geom_point(data=intersTSSRADstrdist.expr.Chip.bothsigOnly,aes(x = logFC_RAD21, y = logFC_RNA,color = sigcat,alpha=sigcat))+
+scale_alpha_manual(values=c("none" = 0.2, "both" =   1, "RAD21only" = 0.5,"GEXonly" = 0.5),guide = 'none')+
+scale_color_manual(values=c("none" = "grey", "both" =  "red", "RAD21only" = "plum1","GEXonly" = "lightsalmon"),
+labels=c("none","both","RAD21 peak only","GEX only"),name="Padj. < 0.05 in: ")+
+geom_smooth(data=intersTSSRADstrdist.expr.Chip.bothsigOnly,aes(x = logFC_RAD21, y = logFC_RNA),method='lm',color="red")+
+geom_smooth(data=intersTSSRADstrdist.expr.Chip, aes(x = logFC_RAD21, y = logFC_RNA),method='lm',color="black",alpha=0.8)+
+xlab("RAD21 log2FC")+ylab("GEX log2FC")+
+annotate("text", x=-0.5, y=8, label=spearmanALLlabstr , size=rel(6),color="black",fontface="italic")+
+annotate("text", x=-0.5, y=7, label=spearmanSigBothlabstr , size=rel(6),color="red",fontface="italic")+
+ylim(-8,8)+xlim(-3,3)+
+theme_classic()+
+theme(legend.position = "bottom",
+        axis.title = element_text(size = rel(2)),
+        axis.text = element_text(size = rel(2)),
+        legend.text = element_text(size = rel(1.2)),
+        legend.title = element_text(size = rel(1.2)),
+      )
+
+ggsave(p,file=file.path(FIGDIR,ANALn,"correlationplots","logFC.RAD21strpeak.vsGEX.all.SA2mut.spearman.pdf"),height=5,width=5.5)
+
+#add labels for top genes
+topgenesRAD21str<-subset(intersTSSRADstrdist.expr.Chip.bothsigOnly, (intersTSSRADstrdist.expr.Chip.bothsigOnly$logFC_RNA>0.585 | intersTSSRADstrdist.expr.Chip.bothsigOnly$logFC_RNA<(-0.585)))
+plab<-p+geom_text_repel(aes(x = logFC_RAD21, y = logFC_RNA), data = topgenesRAD21str, label = topgenesRAD21str$GeneSymbol,cex=2,max.overlaps=100,min.segment.length = 0 ,segment.size=0.1)
+ggsave(plab,file=file.path(FIGDIR,ANALn,"correlationplots","logFC.RAD21strpeak.vsGEX.all.SA2mut.spearman.lab.pdf"),height=5,width=5.5)
+
+#stricter filt to reduce labels (use log FC 1)
+topgenesRAD21strFC1<-subset(intersTSSRADstrdist.expr.Chip.bothsigOnly, (intersTSSRADstrdist.expr.Chip.bothsigOnly$logFC_RNA>1 | intersTSSRADstrdist.expr.Chip.bothsigOnly$logFC_RNA<(-1)))
+plab2<-p+geom_text_repel(aes(x = logFC_RAD21, y = logFC_RNA), data = topgenesRAD21strFC1, label = topgenesRAD21strFC1$GeneSymbol,cex=2,max.overlaps=100,min.segment.length = 0 ,segment.size=0.1,box.padding = 0.7)
+ggsave(plab2,file=file.path(FIGDIR,ANALn,"correlationplots","logFC.RAD21strpeak.vsGEX.all.SA2mut.spearman.lab.FC1.pdf"),height=5,width=5.5)
+```
+
+# save DEGs by RAD21 compensation status
+###this analyis is a required input for the STAG signals at DEG TSS analysis
+```{r}
+# 1) get the positively correlating features (i.e. negative + negative FC or positive + positive FC)
+intersTSSRADstrdist.expr.Chip<-read.table(file=file.path(ANALDIR,ANALn2,"STAG2pat_vs_CTRL","STAG2mut.TSS.GEXFC.vs.str.RAD21peak.FC.txt"),sep="\t")
+RADup_GEXupSig<-subset(intersTSSRADstrdist.expr.Chip,logFC_RAD21>0.322 & FDR_RNA<0.05 & logFC_RNA>0.585)
+length(unique(RADup_GEXupSig$GeneSymbol)) #62
+write.table(RADup_GEXupSig[,c("TSSchr","TSSstart","TSSstop","GeneSymbol", "V5", "TssStrand")],file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsup.FC1.5.STAG2mut.RAD21up.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+
+RADdown_GEXdownSig<-subset(intersTSSRADstrdist.expr.Chip,logFC_RAD21<(-0.322) & FDR_RNA<0.05 & logFC_RNA<(-0.585))
+length(unique(RADdown_GEXdownSig$GeneSymbol)) #83
+write.table(RADdown_GEXdownSig[,c("TSSchr","TSSstart","TSSstop","GeneSymbol", "V5", "TssStrand")],file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsdown.FC1.5.STAG2mut.RAD21down.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+
+# 2) get the negatively correlating features (i.e. positive + negative FC or negative + positive FC)
+RADdup_GEXdownSig<-subset(intersTSSRADstrdist.expr.Chip,logFC_RAD21>(0.322) & FDR_RNA<0.05 & logFC_RNA<(-0.585))
+length(unique(RADdup_GEXdownSig$GeneSymbol)) #83
+write.table(RADdup_GEXdownSig[,c("TSSchr","TSSstart","TSSstop","GeneSymbol", "V5", "TssStrand")],file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsdown.FC1.5.STAG2mut.RAD21up.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+
+RADdown_GEXupSig<-subset(intersTSSRADstrdist.expr.Chip,logFC_RAD21<(-0.322) & FDR_RNA<0.05 & logFC_RNA>(0.585))
+length(unique(RADdown_GEXupSig$GeneSymbol)) #50
+write.table(RADdown_GEXupSig[,c("TSSchr","TSSstart","TSSstop","GeneSymbol", "V5", "TssStrand")],file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsup.FC1.5.STAG2mut.RAD21down.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+
+# 3) get DEGs with stable RAD21 separately
+RADstable_GEXupSig<-subset(intersTSSRADstrdist.expr.Chip,logFC_RAD21<0.322 & logFC_RAD21>(-0.322) & FDR_RNA<0.05 & logFC_RNA>0.585)
+length(unique(RADstable_GEXupSig$GeneSymbol)) #271
+write.table(RADstable_GEXupSig[,c("TSSchr","TSSstart","TSSstop","GeneSymbol", "V5", "TssStrand")],file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsup.FC1.5.STAG2mut.RAD21stable.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+
+RADstable_GEXdownSig<-subset(intersTSSRADstrdist.expr.Chip,logFC_RAD21<0.322 & logFC_RAD21>(-0.322) & FDR_RNA<0.05 & logFC_RNA<(-0.585))
+length(unique(RADstable_GEXdownSig$GeneSymbol)) #77
+write.table(RADstable_GEXdownSig[,c("TSSchr","TSSstart","TSSstop","GeneSymbol", "V5", "TssStrand")],file=file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsdown.FC1.5.STAG2mut.RAD21stable.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+```
+
+
+# Diff EP loop genes - scaled expression heatmap (individual AML pat)
+## identify differentially expressed genes with TSS in differential EP-loop anchors
+```{r}
+qsSA2mut<-data.frame(qstatSA2$table)
+FiltsFC1<-c("up.FC1", "down.FC1")
+#filter for DEGs:
+DiffEPloopsAnchorDiffgenes<-list()
+for (FILT in FiltsFC1){
+DiffEPloopsAnchorDiffgenes[[paste0("EPanch.",FILT,".SA2mut.qstat")]]<-subset(qsSA2mut,qsSA2mut$GeneSymbol %in% TSS_diffEPanch[[paste0("CohesinAssEnhancers.",FILT,".SA2mut")]]$V4)
+DiffEPloopsAnchorDiffgenes[[paste0("GEXdown.loop.",FILT)]]<-subset(DiffEPloopsAnchorDiffgenes[[paste0("EPanch.",FILT,".SA2mut.qstat")]],logFC<-0.585 & logCPM>0 & FDR<0.05)
+DiffEPloopsAnchorDiffgenes[[paste0("GEXup.loop.",FILT)]]<-subset(DiffEPloopsAnchorDiffgenes[[paste0("EPanch.",FILT,".SA2mut.qstat")]],logFC>0.585 & logCPM>0 & FDR<0.05)
+}
+
+#all TSS GEX categories -> collect from list in vectors
+loopTSSup_GEXup<-DiffEPloopsAnchorDiffgenes[["GEXup.loop.up.FC1"]]$GeneSymbol
+loopTSSdown_GEXdown<-DiffEPloopsAnchorDiffgenes[["GEXdown.loop.down.FC1"]]$GeneSymbol
+loopTSSdown_GEXup<-DiffEPloopsAnchorDiffgenes[["GEXup.loop.down.FC1"]]$GeneSymbol
+loopTSSup_GEXdown<-DiffEPloopsAnchorDiffgenes[["GEXdown.loop.up.FC1"]]$GeneSymbol
+
+#generate a table summarizing the gene names:
+TOPAMLtargets<-list("loopTSSup_GEXup"=loopTSSup_GEXup,"loopTSSdown_GEXdown"=loopTSSdown_GEXdown,"loopTSSdown_GEXup"=loopTSSdown_GEXup,"loopTSSup_GEXdown"=loopTSSup_GEXdown)
+TOPAMLtargetsDF<-data.frame(data.frame(lapply(TOPAMLtargets, "length<-", max(lengths(TOPAMLtargets)))))
+write.table(TOPAMLtargetsDF,file.path(ANALDIR,ANALn,"Top_SA2AML_Targets.txt"))
+```
+
+## calculated and subset scaled expression counts for the identified genes
+```{r}
+#generate zscore-scaled log cpms:
+d.log.cpm <- cpm(dgel_selSTAG2, prior.count = 2, log = TRUE) #log-transformed cpms
+d.log.cpm.scaled.transposed<-(scale(t(d.log.cpm)))
+d.log.cpm.scaled<-data.matrix(t(d.log.cpm.scaled.transposed))
+
+#subset the scores for the loop genes
+UPUPzscores<-data.matrix(subset(d.log.cpm.scaled, row.names(d.log.cpm.scaled) %in% row.names(DiffEPloopsAnchorDiffgenes[["GEXup.loop.up.FC1"]])))
+DownUPzscores<-data.matrix(subset(d.log.cpm.scaled, row.names(d.log.cpm.scaled) %in% row.names(DiffEPloopsAnchorDiffgenes[["GEXup.loop.down.FC1"]])))
+DownDownzscores<-data.matrix(subset(d.log.cpm.scaled, row.names(d.log.cpm.scaled) %in% row.names(DiffEPloopsAnchorDiffgenes[["GEXdown.loop.down.FC1"]])))
+UPDownzscores<-data.matrix(subset(d.log.cpm.scaled, row.names(d.log.cpm.scaled) %in% row.names(DiffEPloopsAnchorDiffgenes[["GEXdown.loop.up.FC1"]])))
+
+#create a combined dataframe
+topLoopTSSgenes<-rbind(UPUPzscores,DownUPzscores,DownDownzscores,UPDownzscores)
+rownames(topLoopTSSgenes)<-strsplit2(rownames(topLoopTSSgenes),"$",fixed = TRUE)[,2] #set rownames to geneID
+```
+
+## create a heatmap of those genes using the selected z-score scaled counts
+```{r}
+##define colors for scores
+rwbcol.3 <- colorRampPalette(c("blue","white","red"))(29)
+rwb.3_break_1.5 = c(seq(-1.5,-0.5,length=10), seq(-0.49,0.49,length=10), seq(0.5,1.5,length=10))
+
+##create annotation dataframes for rows with the genes sets
+annotdf<-data.frame(
+  category=factor(rep(c("Loop.strengthened.Gene.up","Loop.weakened.Gene.up","Loop.weakened.Gene.down","Loop.strenghtened.Gene.down"),c(nrow(UPUPzscores),nrow(DownUPzscores),nrow(DownDownzscores),nrow(UPDownzscores))))
+            )
+row.names(annotdf)<-rownames(topLoopTSSgenes)
+
+##create annotation dataframes for columns with the patient/sample groups
+annotation_col= data.frame(
+AMLgroup = factor(c(rep(c("CTRL_AML"),21),rep(c("STAG2mut_AML"),12)))
+)
+row.names(annotation_col)<-colnames(topLoopTSSgenes)
+
+##create annotation list for the colours for column and row annotation categories defined above
+ann_colors <- list(
+AMLgroup = c(CTRL_AML = "firebrick3", STAG2mut_AML = "seagreen2"),
+category = c(Loop.strengthened.Gene.up = "chartreuse4", Loop.weakened.Gene.up = "tomato1",Loop.weakened.Gene.down = "tomato3", Loop.strenghtened.Gene.down = "darkolivegreen1")
+)
+
+##new directory for output
+dir.create(file.path(FIGDIR,ANALn,"Heatmaps"))
+
+##call pheatmap function #library(pheatmap) 
+pheatmap(topLoopTSSgenes,
+         color = rwbcol.3,
+         kmeans_k = NA,
+         breaks = rwb.3_break_1.5,
+         legend = TRUE,
+         legend_breaks = c(-1.5,0,1.5),
+         border_color = NA,
+         #cellwidth = 1,
+         #cellheight = 1,
+         scale = "none",
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         angle_col = "90",
+         show_rownames = TRUE,
+         labels_row = as.expression(lapply(rownames(topLoopTSSgenes),
+                                        function(a) bquote(italic(.(a))))),
+         labels_col = colnames(topLoopTSSgenes),
+         show_colnames = TRUE,
+         annotation_row = annotdf,
+         annotation_names_row = FALSE,
+         annotation_col = annotation_col,
+         annotation_names_col = FALSE,
+         annotation_colors = ann_colors,
+         gaps_col = c(21),
+         gaps_row=c((nrow(UPUPzscores)+nrow(DownUPzscores))),
+         main = "Dysregulated Genes in STAG2 mut AML \n associated with changes of Loops",
+         filename = file.path(FIGDIR,ANALn,"Heatmaps",paste0("pHeatmap.sig.genes.TSS.diffEPLoop.SA2MUTvsCTRL.noclust.pdf")),
+         width = 12,
+         height =8
+         )
+
+```
+
+
+# Diff EP loop genes - GO terms
+```{r}
+#using results saved to TOPAMLtargetsDF dataframe combining all down- or all upregulated genes
+###read results, order and filter according to metascape instructions
+####down GOs (loopTSSdown_GEXdown + loopTSSup_GEXdown)
+SA2downGO_EP<-read.csv(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/SA2mut_EPanch_Down_genes_all.tshd9ohpw/Enrichment_GO/_FINAL_GO.csv"))
+SA2downGO_EP<-SA2downGO_EP[order(SA2downGO_EP$LogP),]
+SA2downGO_EP$GO<-factor(SA2downGO_EP$GO,levels=rev(SA2downGO_EP$GO))
+SA2downGO_EPTopinGroup<-SA2downGO_EP[SA2downGO_EP$FirstInGroupByLogP==1,]
+SA2downGO_EPTopinGroup$labelHits<-paste0(SA2downGO_EPTopinGroup$Description," (",SA2downGO_EPTopinGroup$Hits,")")
+####look at the genes:
+SA2downGO_EPTopinGroup[,c("Description","Hits")]
+
+####up GOs
+SA2upGO_EP<-read.csv(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/SA2mut_EPanch_UP_genes_all.t4lqv0y2o/Enrichment_GO/_FINAL_GO.csv"))
+SA2upGO_EP<-SA2upGO_EP[order(SA2upGO_EP$LogP),]
+SA2upGO_EP$GO<-factor(SA2upGO_EP$GO,levels=rev(SA2upGO_EP$GO))
+SA2upGO_EPTopinGroup<-SA2upGO_EP[SA2upGO_EP$FirstInGroupByLogP==1,]
+SA2upGO_EPTopinGroup$labelHits<-paste0(SA2upGO_EPTopinGroup$Description," (",SA2upGO_EPTopinGroup$Hits,")")
+
+#barplot of down DEGs GO terms associated with chagnes in EP anchors
+DOWN<-ggplot(SA2downGO_EPTopinGroup[(6:1),], aes(x= -(LogP), y= GO)) +
+geom_bar(aes(fill = "filly",alpha=.8), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="blue2"))+
+  scale_x_continuous(limits = c(0,7),expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("enriched \n gene ontology gene sets") +
+  ggtitle("Downregulated genes \n with TSS in altered H3K27ac-loop Anchors \n in STAG2 mut") +
+  geom_text(data=SA2downGO_EPTopinGroup[(6:1),],aes(x=0.1,y=GO,label=labelHits),size=rel(2),hjust=0,fontface = "bold") +
+    theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=rel(0.8)),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=rel(0.6),face="bold"), 
+  plot.title = element_text(size = rel(0.8), face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/GO.SA2mut.downgenes.diffEP.metascape.pdf"),width=4,height=2)
+plot(DOWN)
+dev.off()
+
+#barplot of up DEGs GO terms assocaiated with chagnes in EP anchors
+UP<-ggplot(SA2upGO_EPTopinGroup[(3:1),], aes(x= -(LogP), y= GO)) +
+geom_bar(aes(fill = "filly",alpha=.7), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="firebrick2"))+
+  scale_x_continuous(limits = c(0,7),expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("enriched \n gene ontology gene sets") +
+  ggtitle("Upregulated genes \n with TSS in altered H3K27ac-loop Anchors \n in STAG2 mut") +
+  geom_text(data=SA2upGO_EPTopinGroup[(3:1),],aes(x=0.1,y=GO,label=labelHits),size=rel(2),hjust=0,fontface = "bold") +
+    theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=rel(0.8)),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=rel(0.6),face="bold"), 
+  plot.title = element_text(size = rel(0.8), face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/GO.SA2mut.upgenes.diffEP.metascape.pdf"),width=4,height=2)
+plot(UP)
+dev.off()
+
+#both plots in same pdf
+comb<-list(UP,DOWN) 
+#plot using plot_grid (cowplot) and set rel_width for a 2 column grid to scale the bars to eqal widths (AML plot: 4 bars, KD plot: 5 bars)
+pdf(file = file.path(FIGDIR,ANALn,"GOanalysis/Metascape/GO.SA2mut.up_down_genes.diffEP.metascape.pdf"),height = 4,width = 5)
+plot_grid(plotlist = comb,ncol=1,rel_heights= c(1.25,2))
+dev.off()
+
+```

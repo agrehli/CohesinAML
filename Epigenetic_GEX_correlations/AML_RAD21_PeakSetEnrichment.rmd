@@ -1,0 +1,190 @@
+---
+title: "RAD21 peak set enrichment at differential loop anchors in cohesin-mut AML"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+#rbioc_3-12
+
+# set paths and load libraries
+```{r setup, include=FALSE}
+#set paths
+DIR_DATA="/misc/data"
+WORKDIRRAD<-file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis")
+ANNDIR<-file.path(WORKDIRRAD,"annotation_tables")
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/HiC")
+FIGURESDIR=file.path(WORKDIR,"figures")
+LOOPDIR=file.path(WORKDIR,"loops")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+EPpairs=file.path(diffanchorsn2t,"AnchorsOverlapPairs/TSSoverlap/RAD21centred") #regulatory diff loops
+STRUCANCHS=file.path(diffanchorsn2t,"AnchorChIPoverlap/structural_Loops") #structural diff loops
+
+#load libraries
+library(ggplot2)
+library(DESeq2)
+library(dplyr)
+library(fgsea)
+library(tidyverse)
+```
+
+# read in counts, metadata and peak coordinates
+```{r}
+#read in annotated data:
+#read in counts, metadata and peak coordinates
+metadata <- read.csv(file.path(WORKDIRRAD,"Rad21_AML_meta.csv"),row.names="X...ChIP.ID")
+
+peaks <- read.delim(file.path(ANNDIR,"annotation_tables","RAD21.filtered.peaks.Rinput.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+
+counts<- read.table(file=file.path(ANNDIR,"Allpat_RAD21.peaks.ann.filt.Rinput.txt"), header=T, sep="\t", row.names=1)
+colnames(counts) <- rownames(metadata)
+
+#set variables using metadata file 
+group<-factor(metadata$group,levels=c("ctr", "Rad21", "SA2"))
+NPM1status<- factor(as.character(metadata$npm1))
+FLT3status<-factor(as.character(metadata$flt3itd))
+RUNX1status<-factor(as.character(metadata$RUNX1))
+sex<-factor(as.character(metadata$sex))
+```
+
+
+# read RAD21 peaksets to test into lists
+```{r}
+MUTS<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+# all RAD21 peaks in any diff. looop anchor
+RAD21revanch<-vector(mode = "list", length = 4)
+for (MUT in MUTS) {
+  for (FILT in Filts){
+path<-file.path(diffanchorsn2t,"AnchorChIPoverlap/RAD21revised",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT, ".n2t.RAD21centered.pos.txt"))
+newentry<-rownames(read.table(path, header=F, sep="\t",row.names=1))
+RAD21revanch[[paste0(FILT,"_",MUT)]]<-newentry
+  }
+}
+#all diff. EP-loop anchor associated RAD21 peak sets
+RAD21revEPanch<-vector(mode = "list", length = 4)
+names(RAD21revEPanch)<-names2
+for (MUT in MUTS) {
+  for (FILT in Filts){
+path<-file.path(diffanchorsn2t,"H3K27overlap",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT, ".H3K27accentred.RAD21revcentred.pos.txt"))
+newentry<-rownames(read.table(path, header=F, sep="\t",row.names=1))
+RAD21revEPanch[[paste0(FILT,"_",MUT)]]<-newentry
+  }
+}
+```
+
+# Anaysis using DESEQ2 for contrasts
+```{r}
+#ensure integer format
+i<-c(1:ncol(counts))
+counts[ , i] <- apply(counts[ , i], 2,
+                    function(x) as.integer(x))
+##### DESEQ MODEL
+ddsFullCountTable2A <- DESeqDataSetFromMatrix(
+countData = counts,
+colData = metadata,
+design = ~ npm1 + sex + flt3itd + RUNX1 + group)
+##ensure CTRL group is used as reference point for statistics
+ddsFullCountTable2A$group<-relevel(ddsFullCountTable2A$group, ref = "ctr")
+dds2A <- DESeq(ddsFullCountTable2A)
+##summarize results
+resRad21_modA<-results(dds2A, contrast=c("group","Rad21","ctr"))
+resSA2_modA<-results(dds2A, contrast=c("group","SA2","ctr"))
+```
+
+# using FGSEA for enrichments
+```{r}
+#use FGSEA for enrichment analysis for SA2mut vs CTRL-AML
+##transform results to ranks requried for FGSEA
+resSA2_modA_2<-resSA2_modA
+resSA2_modA_2$SYMBOL<-row.names(resSA2_modA_2)
+resSA2_modA_2 <- data.frame(resSA2_modA_2) %>% 
+  dplyr::select(SYMBOL, stat) %>% 
+  na.omit() %>% 
+  distinct() %>% 
+  group_by(SYMBOL) %>% 
+  summarize(stat=mean(stat))
+ranksSA2 <- deframe(resSA2_modA_2)
+
+
+##make list of peaknames to test
+allAnchsetSA2<-list(RAD21revanch[["up.FC1_SA2mut"]],RAD21revanch[["down.FC1_SA2mut"]])
+names(allAnchsetSA2)<-c("up.FC1_SA2mut","down.FC1_SA2mut")
+EPAnchsetSA2<-list(RAD21revEPanch[["up.FC1_SA2mut"]],RAD21revEPanch[["down.FC1_SA2mut"]])
+names(EPAnchsetSA2)<-c("up.FC1_SA2mut","down.FC1_SA2mut")
+
+##run FGSEA multilevel test on the sets
+fgseaResSA2EPAnchmltlvl<- fgsea(pathways=EPAnchsetSA2, stats=ranksSA2,eps=0)
+fgseaResSA2Anchmltlvl<- fgsea(pathways=allAnchsetSA2, stats=ranksSA2,eps=0)
+
+#create indices for barcode plots EP-associated peaks:
+indEP_up.FC1_SA2mut2 <- rownames(resSA2_modA) %in% RAD21revEPanch[["up.FC1_SA2mut"]]
+indEP_down.FC1_SA2mut2 <- rownames(resSA2_modA) %in% RAD21revEPanch[["down.FC1_SA2mut"]]
+
+##generate edgeR style barcode plots and add FGSEA stats multilvl
+PSE<-data.frame(fgseaResSA2EPAnchmltlvl[1:2,1:7])
+row.names(PSE)<-PSE$pathway
+pdf(file=file.path(FIGURESDIR,"GSEA","PSEA.SA2mut.RAD21peaks.diff.EP.loopanchors.FC1.barcodeplot.FGSEAmltlvl.pdf"), height=6, width=6)
+barcodeplot(resSA2_modA$log2FoldChange, 
+            index=indEP_up.FC1_SA2mut2, 
+            index2=indEP_down.FC1_SA2mut2, 
+            labels=c("CTRL","SA2mut"),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"), 
+            main="RAD21 at differential loop anchors", cex.main=0.65,
+            col.bars=c("seagreen", "firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: RAD21 peaks at strengthened EP-anchors'~'('*.(PSE["up.FC1_SA2mut","size"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSE["up.FC1_SA2mut","padj"])*' NES:'*.(PSE["up.FC1_SA2mut","NES"])), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('red bars: RAD21 peaks at weakened EP-anchors'~'('*.(PSE["down.FC1_SA2mut","size"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSE["down.FC1_SA2mut","padj"])*' NES:'*.(PSE["down.FC1_SA2mut","NES"])), adj = c(0,.5),cex=1.5)
+dev.off()
+
+
+#use FGSEA for enrichment analysis for RAD21 vs CTRL-AML
+#transform results
+resRAD21_modA_2<-resRad21_modA
+resRAD21_modA_2$SYMBOL<-row.names(resRAD21_modA_2)
+resRAD21_modA_2 <- data.frame(resRAD21_modA_2) %>% 
+  dplyr::select(SYMBOL, stat) %>% 
+  na.omit() %>% 
+  distinct() %>% 
+  group_by(SYMBOL) %>% 
+  summarize(stat=mean(stat))
+ranksRAD21 <- deframe(resRAD21_modA_2)
+
+##make list of peaknames to test
+allAnchsetRAD21<-list(RAD21revanch[["up.FC1_RAD21mut"]],RAD21revanch[["down.FC1_RAD21mut"]])
+names(allAnchsetRAD21)<-c("up.FC1_RAD21mut","down.FC1_RAD21mut")
+EPAnchsetRAD21<-list(RAD21revEPanch[["up.FC1_RAD21mut"]],RAD21revEPanch[["down.FC1_RAD21mut"]])
+names(EPAnchsetRAD21)<-c("up.FC1_RAD21mut","down.FC1_RAD21mut")
+
+##run FGSEA multilvs on the sets         
+fgseaResRAD21mutEPAnchmltlvl<- fgsea(pathways=EPAnchsetRAD21, stats=ranksRAD21,eps=0)
+fgseaResRAD21mutAnchmltlvl<- fgsea(pathways=allAnchsetRAD21, stats=ranksRAD21,eps=0)
+
+
+indEP_up.FC1_RADmut2 <- rownames(resRad21_modA) %in% RAD21revEPanch[["up.FC1_RAD21mut"]]
+indEP_down.FC1_RADmut2 <- rownames(resRad21_modA) %in% RAD21revEPanch[["down.FC1_RAD21mut"]]
+
+##generate edgeR style barcode plots and add FGSEA stats multilvl
+PSE<-data.frame(fgseaResRAD21mutEPAnchmltlvl[1:2,1:7])
+row.names(PSE)<-PSE$pathway
+pdf(file=file.path(FIGURESDIR,"GSEA","PSEA.RAD21mut.RAD21peaks.diff.EP.loopanchors.FC1.barcodeplot.FGSEAmltlvl.pdf"), height=6, width=6)
+barcodeplot(resRad21_modA$log2FoldChange, 
+            index=indEP_up.FC1_RADmut2, 
+            index2=indEP_down.FC1_RADmut2, 
+            labels=c("CTRL","RAD21mut"),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"), 
+            main="RAD21 at differential loop anchors", cex.main=0.65,
+            col.bars=c("seagreen", "firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: RAD21 peaks at strengthened EP-anchors'~'('*.(PSE["up.FC1_RAD21mut","size"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSE["up.FC1_RAD21mut","padj"])*' NES:'*.(PSE["up.FC1_RAD21mut","NES"])), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('red bars: RAD21 peaks at weakened EP-anchors'~'('*.(PSE["down.FC1_RAD21mut","size"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSE["down.FC1_RAD21mut","padj"])*' NES:'*.(PSE["down.FC1_RAD21mut","NES"])), adj = c(0,.5),cex=1.5)
+dev.off()
+```

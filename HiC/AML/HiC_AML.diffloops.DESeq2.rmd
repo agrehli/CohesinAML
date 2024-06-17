@@ -1,0 +1,180 @@
+---
+title: "Differential loop Analysis in Cohesin AML"
+author: "Alexander Fischer"
+date: "11 2021"
+output: html
+---
+
+# read in counts, metadata and loop coordinates
+```{r}
+# load library
+library(DESeq2)
+# define paths input
+DIR_DAT="/misc/data/"
+HICDIR<-file.path(DIR_DAT,"analysis/project_cohesin/Cohesin_AML/HiC")
+WORKDIR<-file.path(HICDIR,"loops")
+# create output directory
+dir.create(file.path(WORKDIR,"DESEQn2total"))
+
+# Meta data with co-mutation information etc 
+metaSA2vsCTRL<- read.table(file=file.path(HICDIR,"SA2mutvsCTRLmeta.2.csv"), header=T, sep=",")
+metaRAD21vsCTRL<- read.table(file=file.path(HICDIR,"RAD21mutvsCTRLmeta.csv"), header=T, sep=",")
+
+# Homer normalized counts scored for CTRL vs MUT group datasets
+countsSA2vsCTRL<- read.table(file=file.path(WORKDIR,"CohAML_CTRL_SA2_merged.loop.scores.XYrm.Rinput.txt"), header=T, sep="\t", row.names="Loop")
+countsRAD21vsCTRL<- read.table(file=file.path(WORKDIR,"CohAML_CTRL_RAD21_merged.loop.scores.XYrm.Rinput.txt"), header=T, sep="\t", row.names="Loop")
+
+# Loop coordinates for CTRL vs MUT group datasets
+loopcoordscompleteSA2<- read.table(file=file.path(WORKDIR,"CohAML_CTRL_SA2.loopstartstop.txt"), header=T, sep="\t", row.names="Loop")
+loopcoordscompleteRAD21<- read.table(file=file.path(WORKDIR,"CohAML_CTRL_RAD21.loopstartstop.txt"), header=T, sep="\t", row.names="Loop")
+
+# total count information for CTRL vs MUT group datasets
+normdataSA2<- read.table(file=file.path(WORKDIR,"SA2mutvsCTRL.totalCounts.table.txt"), header=T, sep="\t", row.names="Loop")
+normdataRAD21<- read.table(file=file.path(WORKDIR,"RAD21mutvsCTRL.totalCounts.table.txt"), header=T, sep="\t", row.names="Loop")            
+```
+
+#  DESeq2 Analysis: SA2mut vs CTRL-AML
+```{r}
+# integer conversion
+countsSA2vsCTRLint<-countsSA2vsCTRL
+i<-c(1:ncol(countsSA2vsCTRL))
+countsSA2vsCTRLint[ , i] <- apply(countsSA2vsCTRLint[ , i], 2,
+                    function(x) floor((x*10)+.5))  
+
+# DESeq counts table
+ddsFullCountTable <- DESeqDataSetFromMatrix(
+countData = countsSA2vsCTRLint,
+colData = metaSA2vsCTRL,
+design = ~ npm1 + sex + flt3itd + Dmut + group)
+
+#prepare normalization factors
+ratio.counts<-as.data.frame(normdataSA2[2, ]/normdataSA2[1, ])
+sfuy<-as.data.frame(t(ratio.counts[1,]))
+sfuy<-sfuy$sum
+
+#perform individual steps of DESeq function but use defined sizeFactors
+dds<-ddsFullCountTable
+sizeFactors(dds)<-sfuy
+dds <- estimateDispersionsGeneEst(dds)
+dispersions(dds) <- mcols(dds)$dispGeneEst
+dds<-nbinomWaldTest(dds)
+res <- results(dds)
+resSig <- res[ which(res$padj < 0.05 ), ]
+
+#check number of siginificant Loops
+nrow(resSig) #[1] 2810
+nrow(resSig_downFC2 <- res[ which(res$padj < 0.05 & res$log2FoldChange < (-1) ), ]) #544
+nrow(resSig_upFC2 <- res[ which(res$padj < 0.05 & res$log2FoldChange > (1) ), ]) #415
+nrow(resSig_downFC1.5 <- res[ which(res$padj < 0.05 & res$log2FoldChange < (-0.585) ), ]) #1519
+nrow(resSig_upFC1.5 <- res[ which(res$padj < 0.05 & res$log2FoldChange > (0.585) ), ]) #808
+
+## write results tables
+write.table (res, file = file.path(WORKDIR,"DESEQn2total","SA2mutvsCTRL.merged.loop.scores.DESeq.norm2Total.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf<-read.table (file = file.path(WORKDIR,"DESEQn2total","SA2mutvsCTRL.merged.loop.scores.DESeq.norm2Total.txt"), sep = "\t")
+### merge resultstable with complete loopstart-stop-coordinates (for loop anchor analysis)
+rescoordscomplete<-merge(loopcoordscompleteSA2,resdf, by=0)
+write.table (rescoordscomplete, file = file.path(WORKDIR,"DESEQn2total","SA2mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+## add individual normalized loopscores to results 
+row.names(rescoordscomplete)<-rescoordscomplete$Row.names
+colnames(rescoordscomplete)[1]<-"LoopID"
+rescoordscompletecounts<-merge(rescoordscomplete,counts(dds, normalized=T), by=0) #add individual patients norm counts for each loop
+rescoordscompletecounts<-rescoordscompletecounts[,-1]#remove duplicate column
+
+##add mean loop score by pat-group for each loop
+rescoordscompletecounts$mean_CTRL_AML<-rowMeans(rescoordscompletecounts[,c("ctr_16911","ctr_18136","ctr_18519", "ctr_19405", "ctr_19416", "ctr_21047", "ctr_21290")], na.rm=TRUE)
+rescoordscompletecounts$mean_SA2mut_AML<-rowMeans(rescoordscompletecounts[,c("SA2_24743","SA2_27396","SA2_29728", "SA2_9708")], na.rm=TRUE)
+write.table (rescoordscompletecounts, file = file.path(WORKDIR,"DESEQn2total","SA2mutvsCTRL.loop.scores.DESeq2.norm2Total.loopcoords.normscores.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+#look at loopscores for changes shown in genera overview figure to select representative loops:
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 166000000 & end2 < 167500000,select=c("LoopID","mean_CTRL_AML","mean_SA2mut_AML"))
+#chr1:166485000-167065000   mean_CTRL_AML=53.0240 mean_SA2mut_AML=39.67162
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 166500000 & end2 < 167500000,select=c("LoopID","mean_CTRL_AML","mean_SA2mut_AML"))
+#chr1:166900000-167220000 mean_CTRL_AML=121.7067 mean_SA2mut_AML=66.91788
+#chr1:166910000-167065000 mean_CTRL_AML=512.8970 mean_SA2mut_AML=347.96544
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 166000000 & end2 < 168000000 & mean_CTRL_AML<mean_SA2mut_AML,select=c("LoopID","mean_CTRL_AML","mean_SA2mut_AML"))
+#chr1:166895000-167545000 mean_CTRL_AML 57.00159         mean_SA2mut_AML 93.74451
+#chr1:167065000-167545000 mean_CTRL_AML 154.70623        mean_SA2mut_AML 206.08696
+#chr1:167067500-167450000 mean_CTRL_AML 179.06050        mean_SA2mut_AML 235.51786
+#chr1:167070000-167695000 mean_CTRL_AML 46.09264        mean_SA2mut_AML 77.56286
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 167500000 & end2 < 167800000,select=c("LoopID","mean_CTRL_AML","mean_SA2mut_AML"))
+#chr1:167557500-167690000 mean_CTRL_AML 292.5934 mean_SA2mut_AML 191.72451
+#chr1:167600000-167690000 mean_CTRL_AML 440.1971 mean_SA2mut_AML 363.26350
+
+
+```
+
+
+#  DESeq2 Analysis: RAD21mut vs CTRL-AML
+
+```{r}
+# integer conversion
+countsRAD21vsCTRLint<-countsRAD21vsCTRL
+i<-c(1:ncol(countsRAD21vsCTRL))
+countsRAD21vsCTRLint[ , i] <- apply(countsRAD21vsCTRLint[ , i], 2,
+                    function(x) floor((x*10)+.5))               
+
+
+#create Deseq count tables
+ddsFullCountTable <- DESeqDataSetFromMatrix(
+countData = countsRAD21vsCTRLint,
+colData = metaRAD21vsCTRL,
+design = ~ npm1 + sex + flt3itd + Dmut + group)
+
+#prepare normalization factors
+ratio.counts<-as.data.frame(normdataRAD21[2, ]/normdataRAD21[1, ])
+sfuy<-as.data.frame(t(ratio.counts[1,]))
+sfuy<-sfuy$sum
+
+#perform individual steps of DESeq function but use defined sizeFactors
+dds<-ddsFullCountTable
+sizeFactors(dds)<-sfuy
+dds <- estimateDispersionsGeneEst(dds)
+dispersions(dds) <- mcols(dds)$dispGeneEst
+dds<-nbinomWaldTest(dds)
+
+res <- results(dds)
+resSig <- res[ which(res$padj < 0.05 ), ]
+nrow(resSig) #[1] 3092
+nrow(resSig_downFC2 <- res[ which(res$padj < 0.05 & res$log2FoldChange < (-1) ), ]) #392
+nrow(resSig_upFC2 <- res[ which(res$padj < 0.05 & res$log2FoldChange > (1) ), ]) #213
+nrow(resSig_downFC1.5 <- res[ which(res$padj < 0.05 & res$log2FoldChange < (-0.585) ), ]) #1469
+nrow(resSig_upFC1.5 <- res[ which(res$padj < 0.05 & res$log2FoldChange > (0.585) ), ]) #448
+
+# write all results n2t
+write.table (res, file = file.path(WORKDIR,"DESEQn2total","RAD21mutvsCTRL.merged.loop.scores.DESeq.norm2Total.txt"), sep = "\t", row.names=T, quote=FALSE)
+## add loop coordinates
+resdf<-read.table (file = file.path(WORKDIR,"DESEQn2total","RAD21mutvsCTRL.merged.loop.scores.DESeq.norm2Total.txt"), sep = "\t")
+rescoordscomplete<-merge(loopcoordscompleteRAD21,resdf, by=0)
+write.table (rescoordscomplete, file = file.path(WORKDIR,"DESEQn2total","RAD21mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+
+## add individual normalized loopscores to results 
+row.names(rescoordscomplete)<-rescoordscomplete$Row.names
+colnames(rescoordscomplete)[1]<-"LoopID"
+rescoordscompletecounts<-merge(rescoordscomplete,counts(dds, normalized=T), by=0) #add individual patients norm counts for each loop
+rescoordscompletecounts<-rescoordscompletecounts[,-1]#remove duplicate column
+
+##add mean loop score by pat-group for each loop
+rescoordscompletecounts$mean_CTRL_AML<-rowMeans(rescoordscompletecounts[,c("ctr_16911","ctr_18136","ctr_18519", "ctr_19405", "ctr_19416", "ctr_21047", "ctr_21290")], na.rm=TRUE)
+rescoordscompletecounts$mean_RAD21mut_AML<-rowMeans(rescoordscompletecounts[,c("RAD21_UKR186_Rep1","RAD21_23039","RAD21_26830", "RAD21_38455")], na.rm=TRUE)
+write.table (rescoordscompletecounts, file = file.path(WORKDIR,"DESEQn2total","RAD21mutvsCTRL.loop.scores.DESeq2.norm2Total.loopcoords.normscores.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+
+
+
+#look at loopscores for changes shown in genera overview figure to select representative loops:
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 166000000 & end2 < 167500000,select=c("LoopID","mean_CTRL_AML","mean_RAD21mut_AML"))
+#6882 chr1:166908000-167062500      490.0969         424.89230  -> similar to to chr1:166910000-167065000 mean_CTRL_AML=512.8970 mean_SA2mut_AML=347.96544
+
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 166000000 & end2 < 168000000 & mean_CTRL_AML<mean_RAD21mut_AML,select=c("LoopID","mean_CTRL_AML","mean_RAD21mut_AML"))
+#                       LoopID mean_CTRL_AML mean_RAD21mut_AML
+#chr1:166881000-167544000      45.51076          88.12782
+subset(rescoordscompletecounts, chr1=="chr1" & start1 > 167500000 & end2 < 167800000,select=c("LoopID","mean_CTRL_AML","mean_RAD21mut_AML"))
+
+#                       LoopID mean_CTRL_AML mean_RAD21mut_AML
+# chr1:167557500-167690000      279.0250          239.7995
+# chr1:167598000-167690000      420.5051          372.2545
+
+
+```

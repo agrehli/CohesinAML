@@ -1,0 +1,143 @@
+---
+title: "CFU Analysis in CD34# HSPCs after Cohesin KD"
+author: "Alexander Fischer"
+date: "JUN 2022"
+output: html_document
+---
+#rbioc_3-12
+#set paths and load libraries
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/CD34/CFU")
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+library(rstatix)
+```
+
+#prepare data table
+```{r}
+#read in csv file
+CFUrawdata<-read.csv(file.path(WORKDIR,"Summary_stats_CD34_KDs_CFU.2.csv"))
+#filter out samples without CFU data and keep only cols with CFU counts
+CFUfiltdata<-CFUrawdata %>% drop_na(CFU.total)
+row.names(CFUfiltdata)<-CFUfiltdata$X...Sample
+CFUfiltdata2<-CFUfiltdata[,c("CFU.E","CFU.GM","CFU.GEMM","CFU.total")]
+#define group vector
+group<-CFUfiltdata$group
+donor<-CFUfiltdata$donor
+CFUfiltdata2<-CFUfiltdata[,c("donor","group","CFU.E","CFU.GM","CFU.GEMM","CFU.total")]
+write.table(CFUfiltdata2,file.path(WORKDIR,"CD34_KDs_CFU.filt.txt"),sep="\t",quote=FALSE,row.names=TRUE,col.names=TRUE)
+
+#transpose datafram (flipping cloumns/rows)
+CFUfiltdata.transp<-as.data.frame(x = t(CFUfiltdata2), stringsAsFactors = FALSE)
+
+
+#means by condition
+##stack data and add CFU category as well as group in each row
+library(plyr)
+dat.st<-stack(as.data.frame(CFUfiltdata.transp ))   ##stack data to a single column can be used for geom_jitter points
+dat.st$CFU<- rep(rownames(CFUfiltdata.transp ), times = ncol(CFUfiltdata.transp ))  ##add genenames as extra col
+dat.st$group=rep(group, each=length(CFUfiltdata.transp[,1]))    ##add group identity as extra col
+##calculate mean values and standard dev.
+mean.dat<-ddply(dat.st, .(group,CFU),
+summarize,
+mean= round(mean(values),2),
+sd=round(sd(values),2)) 
+
+
+mean.dat2<-ddply(dat.st, .(group,CFU),
+summarize,
+mean= round(mean(values),2),
+sd=round(sd(values),2),
+N=length(values)) 
+mean.dat2$SEM<-sqrt(mean.dat2$sd/mean.dat2$N)
+
+
+#set levels to desired order in plots
+mean.dat$group <- factor(mean.dat$group , levels = c("CTRL","STAG2KD","STAG1KD","STAG12KD","RAD21KD"))
+mean.dat$CFU <- factor(mean.dat$CFU , levels = c("CFU.E", "CFU.GM", "CFU.GEMM","CFU.total"))
+mean.dat2$group <- factor(mean.dat2$group , levels = c("CTRL","STAG2KD","STAG1KD","STAG12KD","RAD21KD"))
+mean.dat2$CFU <- factor(mean.dat2$CFU , levels = c("CFU.E", "CFU.GM", "CFU.GEMM","CFU.total"))
+dat.st$CFU <- factor(dat.st$CFU  , levels = c("CFU.E", "CFU.GM", "CFU.GEMM","CFU.total"))
+dat.st$group <- factor(dat.st$group , levels = c("CTRL","STAG2KD","STAG1KD","STAG12KD","RAD21KD"))
+```
+
+# test for normal distribution using histograms and shapiro test
+```{r}
+for (CFUcat in levels(dat.st$CFU)){ 
+pdf(file=file.path(WORKDIR,paste0("Hist.",CFUcat,".pdf")))
+for (grp in levels(dat.st$group)){ 
+shap<-shapiro.test(subset(dat.st,CFU==CFUcat & group==grp)[,"values"])
+hist(subset(dat.st,CFU==CFUcat & group==grp)[,"values"], main=paste0(CFUcat," in ",grp),xlab="")
+par(mar=c(2,2,4,2))
+mtext(paste0("shapiro.test: p= ", shap[2]," ",shap[1]), side=3)
+}
+dev.off()
+}
+###most sets ar normally distributed, but some arent (e.g. CFU.GEMM in STAG2KD)
+```
+
+# non-parametric testing using kruskal - wallis test followed by pairwise wilcoxon tests with adjustment
+```{r}
+#general testing for significant differences of groups for each CFU cat
+kruskal.test(values ~ group, data = subset(dat.st,CFU=="CFU.E")) #Kruskal-Wallis chi-squared = 43.677, df = 4, p-value = 7.488e-09
+kruskal.test(values ~ group, data = subset(dat.st,CFU=="CFU.GM")) #Kruskal-Wallis chi-squared = 30.682, df = 4, p-value = 3.555e-06
+kruskal.test(values ~ group, data = subset(dat.st,CFU=="CFU.GEMM")) #Kruskal-Wallis chi-squared = 25.866, df = 4, p-value = 3.367e-05
+kruskal.test(values ~ group, data = subset(dat.st,CFU=="CFU.total")) #Kruskal-Wallis chi-squared = 38.181, df = 4, p-value = 1.028e-07
+
+#wilcox tests with Benjamini-Hochberg adjustment of pvalues for the individual comparisons
+wil.CFU.E<-wilcox_test(formula=values ~ group,data=subset(dat.st,CFU=="CFU.E"), paired = FALSE, p.adjust.method = "BH")
+wil.CFU.GM<-wilcox_test(formula=values ~ group,data=subset(dat.st,CFU=="CFU.GM"), paired = FALSE, p.adjust.method = "BH")
+wil.CFU.GEMM<-wilcox_test(formula=values ~ group,data=subset(dat.st,CFU=="CFU.GEMM"), paired = FALSE, p.adjust.method = "BH")
+wil.CFU.total<-wilcox_test(formula=values ~ group,data=subset(dat.st,CFU=="CFU.total"), paired = FALSE, p.adjust.method = "BH")
+
+#add the sig.stats to mean.dat2 
+wilcoxonlist<-list(wil.CFU.E,wil.CFU.GM,wil.CFU.GEMM,wil.CFU.total)
+names(wilcoxonlist)<-c("CFU.E","CFU.GM","CFU.GEMM","CFU.total")
+mean.dat2$p.adj.signif.vs.CTRL<-""
+mean.dat2$p.adj.vs.CTRL<-""
+
+KDs=c("STAG1KD","STAG2KD","STAG12KD","RAD21KD")
+
+for (CFUcat in levels(mean.dat2$CFU)){
+  for (KD in KDs){ 
+mean.dat2[mean.dat2$CFU == CFUcat & mean.dat2$group==KD, "p.adj.signif.vs.CTRL"]<-subset(wilcoxonlist[[CFUcat]],group1=="CTRL"&group2==KD)["p.adj.signif"]
+mean.dat2[mean.dat2$CFU == CFUcat & mean.dat2$group==KD, "p.adj.vs.CTRL"]<-subset(wilcoxonlist[[CFUcat]],group1=="CTRL"&group2==KD)["p.adj"]
+}}
+
+write.table(mean.dat2,file.path(WORKDIR,"CD34_KDs_CFU.mean.summary.statistics.txt"),sep="\t",quote=FALSE,row.names=FALSE,col.names=TRUE)
+```
+
+#  grouped barplot with standard deviation errorbars and dots for the individual replicate
+```{r}
+#show adj. p-value vs CTRL significance level with stars in plot and position legend inside plot
+pdf(file=file.path(WORKDIR,"CFUstats_CohKDs_sd_transfections.as.replicates.padj.2.pdf"), width = 6, height = 5)
+ggplot(mean.dat2, aes(group, mean,fill=CFU)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9),alpha=0.8) +
+  geom_errorbar(data=mean.dat2,aes(ymin=mean-sd, ymax=mean+sd), position = position_dodge(width = 0.9),width=0.1)+
+  geom_jitter(data = dat.st, aes(x=group,y=values,fill=CFU,color=CFU), position = position_dodge(width = 0.9),alpha=1,size=1)+
+  scale_fill_manual(values = c("CFU.E" = "firebrick1", "CFU.GM" = "lightgrey", "CFU.GEMM" = "chocolate", "CFU.total" = "darkgoldenrod1")) +
+  scale_color_manual(values = c("CFU.E" = "firebrick3", "CFU.GM" = "darkslategrey", "CFU.GEMM" = "chocolate3", "CFU.total" = "darkgoldenrod3")) +
+  geom_text(data=mean.dat2,aes(y=mean+sd*2+10),label=mean.dat2$p.adj.signif.vs.CTRL,position = position_dodge(width = 0.9))+
+  xlab("") + ylab("number of colonies") +
+  scale_x_discrete(labels=c("CTRL\nHSPCs","STAG2\nKD","STAG1\nKD","STAG1+2\nKD","RAD21\nKD")) +
+  theme(
+  axis.text.y=element_text(size=12),
+  axis.text.x=element_text(size=16),
+  legend.text=element_text(size=16),
+  legend.title=element_text(size=16,face="bold"),
+  legend.background = element_blank(),
+  legend.box.background = element_rect(colour = "black"),
+  axis.title=element_text(size=16,face="bold"),
+  plot.title = element_text(size = 18, face = "bold",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  legend.position=c(.85,.83),
+  axis.line = element_line(colour = "black"),)
+dev.off() 
+```
+
+  

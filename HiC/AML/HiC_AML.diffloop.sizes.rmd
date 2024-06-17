@@ -1,0 +1,93 @@
+---
+title: "Differential loop size distribution Analysis in Cohesin AML"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+
+
+# load libraries and set directories
+```{r}
+## libraries
+library(reshape2)
+library(ggplot2)
+library(beanplot)
+library(rstatix)
+
+## paths
+WORKDIRAML="/misc/data/analysis/project_cohesin/Cohesin_AML/HiC"
+LOOPDIRAML=file.path(WORKDIRAML,"loops/DESEQn2total")
+FIGURESDIRAML=file.path(WORKDIRAML,"figures","Loopsize_Beanplots")
+MUTS<-c("SA2mut","RAD21mut")
+
+## new dir for size plots
+dir.create(FIGURESDIRAML)
+```
+
+# read loop analysis files
+```{r}
+SA2mutloops<-read.table(file.path(LOOPDIRAML,"SA2mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=T,row.names=1)
+RAD21mutloops<-read.table(file.path(LOOPDIRAML,"RAD21mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=T,row.names=1)
+
+LooplistAML<-list(SA2mutloops,RAD21mutloops)
+names(LooplistAML)<-c("SA2mutloops","RAD21mutloops")
+```
+
+
+# calculate loop sizes and filter sig. loops
+```{r}
+for (MUT in MUTS){
+LooplistAML[[paste0(MUT,"loops")]]$loopsize<-LooplistAML[[paste0(MUT,"loops")]]$end2-LooplistAML[[paste0(MUT,"loops")]]$start1
+LooplistAML[[paste0(MUT,"loops_filt_strengthened")]]<-subset(LooplistAML[[paste0(MUT,"loops")]],padj<0.05 & log2FoldChange > 0.585)
+LooplistAML[[paste0(MUT,"loops_filt_weakened")]]<-subset(LooplistAML[[paste0(MUT,"loops")]],padj<0.05 & log2FoldChange < -0.585)
+LooplistAML[[paste0(MUT,"loops_filt_strengthened_Top500")]]<-head(subset(LooplistAML[[paste0(MUT,"loops")]],padj<0.05 & log2FoldChange > 0.585),500)
+LooplistAML[[paste0(MUT,"loops_filt_weakened_Top500")]]<-head(subset(LooplistAML[[paste0(MUT,"loops")]],padj<0.05 & log2FoldChange < -0.585),500)
+}
+```
+
+# report numbers for size categories
+```{r}
+changes<-c("strengthened","weakened")
+sizedf<-data.frame()
+for (MUT in MUTS){
+   for (change in changes){ 
+sizedf[paste0(change,"<500kb"),MUT]<-nrow(subset(LooplistAML[[paste0(MUT,"loops_filt_",change)]],loopsize<500000))
+sizedf[paste0(change,">500kb"),MUT]<-nrow(subset(LooplistAML[[paste0(MUT,"loops_filt_",change)]],loopsize>500000))
+}}
+sizedf
+write.table(sizedf,file.path(LOOPDIRAML,"diffloopsizes.txt"))
+```
+
+# test up vs down sizes with wilcoxon test
+```{r}
+for (MUT in MUTS){
+LooplistAML[[paste0(MUT,"wilcoxonUPvsDown")]]<-wilcox.test(LooplistAML[[paste0(MUT,"loops_filt_strengthened")]]$loopsize,LooplistAML[[paste0(MUT,"loops_filt_weakened")]]$loopsize)
+}
+##look at results
+LooplistAML[[paste0("SA2mut","wilcoxonUPvsDown")]]
+LooplistAML[[paste0("RAD21mut","wilcoxonUPvsDown")]]
+```
+
+# generate beanplots comparing sizes of weakened and strengthened loops using all sign. loops
+```{r}
+LooplistAML[["SA2mutcolors"]] <- c("seagreen1","seagreen3")
+LooplistAML[["RAD21mutcolors"]] <- c("orchid1","orchid3")
+marks <- c(20000,50000,100000,200000, 500000,1000000,2000000, 5000000,10000000)
+
+for (MUT in MUTS){
+data<-data.frame(weakened=LooplistAML[[paste0(MUT,"loops_filt_weakened")]]$loopsize)
+new.col<-LooplistAML[[paste0(MUT,"loops_filt_strengthened")]]$loopsize
+data$strenghtened<-c(new.col, rep(NA, nrow(data)-length(new.col)))  #add NAs to fill up missing entries other wise no dataframe!
+pdf(file=file.path(FIGURESDIRAML,paste0("Beanplot_LoopSizeDistribution.",MUT,".vsCTRL_sig.n2t.pdf")), height=4, width=2.5)
+beanplot(data,log="y", bw="nrd",what=c(0,1,0,0),axes = FALSE, col = "darkgrey", border = "darkgrey" ,overallline = "median", method="jitter", boxwex = 1.25, beanlinewd = 1, maxstripline = 0.8, ylim=c(20000,10000000), lwd=0.5)
+par(new=TRUE)
+boxplot(data,range=0,log="y", style="quantile",axes = FALSE, col = LooplistAML[[paste0(MUT,"colors")]], alpha=0.5, border = "black",overallline = "median", notch=TRUE, boxwex = 0.5, staplewex = 0.5, ylim=c(20000,10000000),lwd=0.6)
+axis(1,padj=-0.8,family="Helvetica",cex.axis=0.5,at=1:2, labels=c("weakened","strenghtened"))
+axis(2,padj=0.4,family="Helvetica",cex.axis=0.6,at=marks,labels=format(marks,scientific=FALSE),las=2,mgp=c(0,.6,0))
+mtext("loop domain size",family="Helvetica",side=2,line=2,cex=1.2,padj=-1.2)
+mtext(paste0("in ",MUT),family="Helvetica",ps=12,side=1,line=2,cex=1.2,padj=0)
+text(1.5,10000000,"****") #adding significance levels as checked above!
+segments(1,5000000,2,5000000)
+dev.off()
+}
+```

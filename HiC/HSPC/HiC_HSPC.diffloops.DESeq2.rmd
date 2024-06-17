@@ -1,0 +1,134 @@
+---
+title: "Differential loop Analysis in Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "09 2021"
+output: html
+---
+
+
+# read in counts, metadata and loop coordinates
+```{r}
+library(DESeq2)
+library(ggplot2)
+
+#define paths
+PROJDIR="/misc/data/analysis/project_cohesin/CD34/HiC_KDs/DeepSeq_Analysis/"
+LOOPDIR=file.path(PROJDIR,"loops")
+LOOPDIR_XYrm=file.path(LOOPDIR,"withoutXY") #data without sex-chromosomes
+KDs<-c("RAD21","SA2","SA1")
+#read in counts, metadata and loop coordinates into lists
+countslist<-list()
+metalist<-list()
+normdatalist<-list()
+loopcoordlist<-list()
+for (KD in KDs){
+countslist[[KD]]<- read.table(file=file.path(LOOPDIR,paste0("tmp.scores.",KD,"KD.txt")), header=T, sep="\t", row.names="Loop")
+metalist[[KD]]<-read.table(file=file.path(PROJDIR,paste0(KD,"KDvsCTRLmeta.csv")), header=T, sep=",")
+normdatalist[[KD]]<-read.table(file=file.path(LOOPDIR,paste0(KD,"KDvsCTRL.totalCounts.table.txt")), header=T, sep="\t", row.names="Loop")
+loopcoordlist[[KD]]<-read.table(file=file.path(LOOPDIR,paste0("tmp.loopstartstop.",KD,"KD.txt")), header=T, sep="\t", row.names="Loop")
+}
+#for analysis without XY-chrom: read in counts, metadata and loop coordinates into lists
+countslistXYrm<-list()
+normdatalistXYrm<-list()
+loopcoordlistXYrm<-list()
+for (KD in KDs){
+countslistXYrm[[KD]]<- read.table(file=file.path(LOOPDIR_XYrm,paste0("tmp.scores.",KD,"KD.XYrm.txt")), header=T, sep="\t", row.names="Loop")
+normdatalistXYrm[[KD]]<-read.table(file=file.path(LOOPDIR_XYrm,paste0(KD,"KDvsCTRL.totalCounts.table.XYrm.txt")), header=T, sep="\t", row.names="Loop")
+loopcoordlistXYrm[[KD]]<-read.table(file=file.path(LOOPDIR_XYrm,paste0("tmp.loopstartstop.",KD,"KD.XYrm.txt")), header=T, sep="\t", row.names="Loop")
+}
+
+
+```
+
+# Analysis in DESeq2 with custom normalization
+```{r}
+resultslist<-list()
+# Differential loop analysis
+for (KD in KDs){
+##integer conversion + flooring
+i<-c(1:ncol(countsRADvsCTRL))
+countslist[[KD]][ , i] <- apply(countslist[[KD]][ , i], 2,
+                    function(x) floor((x*10)+.5))
+##create Deseq count table
+ddsFullCountTable <- DESeqDataSetFromMatrix(
+countData = countslist[[KD]],
+colData = metalist[[KD]],
+design = ~ Donor + group)
+
+##prepare normalization factors
+ratio.counts<-as.data.frame(normdatalist[[KD]][2, ]/normdatalist[[KD]][1, ])
+sfuy<-as.data.frame(t(ratio.counts[1,]))
+sfuy<-sfuy$sum
+
+##DESEQ process step by step with custom norm2total using the calculated scaling factor
+dds<-ddsFullCountTable
+sizeFactors(dds)<-sfuy
+dds <- estimateDispersionsGeneEst(dds)
+dispersions(dds) <- mcols(dds)$dispGeneEst
+dds<-nbinomWaldTest(dds)
+##save results to list
+resultslist[[KD]] <- results(dds)
+##write result tables of analyses
+write.table (resultslist[[KD]], file = file.path(LOOPDIR,paste0(KD,"KDvsCTRL.merged.loop.scores.DESeq.norm2Total.txt")), sep = "\t", row.names=T, quote=FALSE)
+##merge resultstable with loopstart-stop-coordinates
+resdf<-read.table (file = file.path(LOOPDIR,paste0(KD,"KDvsCTRL.merged.loop.scores.DESeq.norm2Total.txt")), sep = "\t")
+rescoords2<-merge(loopcoordlist[[KD]],resdf, by=0)
+write.table(rescoords2, file = file.path(LOOPDIR,paste0(KD,"KDvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords.txt")), sep = "\t", row.names=F, quote=FALSE)
+}
+
+#Diffloop summary
+ressumdf<-data.frame()
+for (KD in KDs){
+ ressumdf[KD,"totalSig"]<-nrow(resultslist[[KD]][ which(resultslist[[KD]]$padj < 0.05 ), ])
+ ressumdf[KD,"down.FC.1.5"]<-nrow(resultslist[[KD]][ which(resultslist[[KD]]$padj < 0.05 & resultslist[[KD]]$log2FoldChange < (-0.585)), ])
+ ressumdf[KD,"up.FC.1.5"]<-nrow(resultslist[[KD]][ which(resultslist[[KD]]$padj < 0.05 & resultslist[[KD]]$log2FoldChange > (0.585)), ])
+}
+write.table(ressumdf,file = file.path(LOOPDIR,paste0("KDvsCTRL.diffloop.summary.DS.n2t.txt")), sep = "\t", row.names=F, quote=FALSE)
+
+```
+
+# Analysis in DESeq2 with custom normalization without XY-chrom
+```{r}
+resultslistXYrm<-list()
+# Differential loop analysis
+for (KD in KDs){
+##integer conversion + flooring
+i<-c(1:ncol(countsRADvsCTRL))
+countslistXYrm[[KD]][ , i] <- apply(countslistXYrm[[KD]][ , i], 2,
+                    function(x) floor((x*10)+.5))
+##create Deseq count table
+ddsFullCountTable <- DESeqDataSetFromMatrix(
+countData = countslistXYrm[[KD]],
+colData = metalist[[KD]],
+design = ~ Donor + group)
+
+##prepare normalization factors
+ratio.counts<-as.data.frame(normdatalistXYrm[[KD]][2, ]/normdatalistXYrm[[KD]][1, ])
+sfuy<-as.data.frame(t(ratio.counts[1,]))
+sfuy<-sfuy$sum
+
+##DESEQ process step by step with custom norm2total using the calculated scaling factor
+dds<-ddsFullCountTable
+sizeFactors(dds)<-sfuy
+dds <- estimateDispersionsGeneEst(dds)
+dispersions(dds) <- mcols(dds)$dispGeneEst
+dds<-nbinomWaldTest(dds)
+##save results to list
+resultslistXYrm[[KD]] <- results(dds)
+##write result tables of analyses
+write.table (resultslistXYrm[[KD]], file = file.path(LOOPDIR_XYrm,paste0(KD,"KDvsCTRL.merged.loop.scores.DESeq.norm2Total.txt")), sep = "\t", row.names=T, quote=FALSE)
+##merge resultstable with loopstart-stop-coordinates
+resdf<-read.table (file = file.path(LOOPDIR_XYrm,paste0(KD,"KDvsCTRL.merged.loop.scores.DESeq.norm2Total.txt")), sep = "\t")
+rescoords2<-merge(loopcoordlistXYrm[[KD]],resdf, by=0)
+write.table(rescoords2, file = file.path(LOOPDIR_XYrm,paste0(KD,"KDvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords.txt")), sep = "\t", row.names=F, quote=FALSE)
+}
+
+#Diffloop summary wihtout XY
+ressumdfXYrm<-data.frame()
+for (KD in KDs){
+ ressumdfXYrm[KD,"totalSig"]<-nrow(resultslistXYrm[[KD]][ which(resultslistXYrm[[KD]]$padj < 0.05 ), ])
+ ressumdfXYrm[KD,"down.FC.1.5"]<-nrow(resultslistXYrm[[KD]][ which(resultslistXYrm[[KD]]$padj < 0.05 & resultslistXYrm[[KD]]$log2FoldChange < (-0.585)), ])
+ ressumdfXYrm[KD,"up.FC.1.5"]<-nrow(resultslistXYrm[[KD]][ which(resultslistXYrm[[KD]]$padj < 0.05 & resultslistXYrm[[KD]]$log2FoldChange > (0.585)), ])
+}
+write.table(ressumdfXYrm,file = file.path(LOOPDIR_XYrm,paste0("KDvsCTRL.diffloop.summary.DS.n2t.txt")), sep = "\t", row.names=F, quote=FALSE)
+```

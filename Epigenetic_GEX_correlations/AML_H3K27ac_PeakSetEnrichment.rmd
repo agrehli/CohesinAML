@@ -1,0 +1,376 @@
+---
+title: "H3K27ac enrichment at differential RAD21 peaks or diff. loop anchors in cohesin mut AML"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+#rbioc_3-12
+
+# set paths and load libraries
+```{r setup, include=FALSE}
+#define paths
+DIR_DATA="/misc/data"
+WORKDIRH3K=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis/H3K27ac")
+FIGURESDIRH3K=file.path(WORKDIRH3K,"figures")
+#RAD21 chip input
+RAD21diffpeaksH3Koverlap=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis/RAD21revised/diffPeaks/diffPeakAssEnh")
+#HiC input
+WORKDIRHIC=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/HiC")
+FIGURESDIR=file.path(WORKDIRHIC,"figures")
+LOOPDIR=file.path(WORKDIRHIC,"loops")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+EPpairs=file.path(diffanchorsn2t,"AnchorsOverlapPairs/TSSoverlap/H3K27accentred")
+#load libraries
+library(edgeR)
+library(cqn)
+library(scales)
+library(dplyr)
+```
+
+# read in counts, metadata and peak coordinates
+```{r}
+#counts
+data <- read.delim(file.path(WORKDIRH3K,"annotation_tables","Allpat_H3K27ac.XYrem.CNVnorm.peaks.ann.Rinput.txt"), row.names=1)
+#meta
+metadata <- read.csv(file.path(WORKDIRH3K,"AML_H3K27ac_meta.csv"),row.names="X...ChIP.ID")
+colnames(data)<-metadata$shortID_patID
+# peaks
+peaks <- read.delim(file=file.path(WORKDIRH3K,"peaks/Allpat_mergePeaks_H3K27ac.filtered.XYrem.peaks.refChr.txt"), header=F)
+colnames(data)<-metadata$shortID_patID
+#CpG and length annotated peak information
+covar <- read.delim(file=file.path(WORKDIRH3K,"peaks/Allpat_mergePeaks_H3K27ac.filtered.XYrem.peaks.CpGann.txt"), row.names="ID")
+
+#important factors for designs etc
+group<-factor(metadata$group,levels=c("ctr", "Rad21", "SA2"))
+NPM1status<- factor(as.character(metadata$npm1))
+FLT3status<-factor(as.character(metadata$flt3itd))
+RUNX1status<-factor(as.character(metadata$RUNX1))
+sex<-factor(as.character(metadata$sex))
+
+```
+
+# Peakset Enrichments using edgeR
+## DGElist object, cqn normalisation and contrasts as done in general H3K27ac analysis script
+```{r}
+#create dglist object
+d <- DGEList(counts=data,group=group)
+#filtering
+keep <- rowSums(cpm(d) > 1) >= 2
+summary(keep)
+d <- d[keep, , keep.lib.sizes=FALSE]
+#read cpg data
+covar.merged <- merge(d$counts, covar, by="row.names")
+cov <- covar.merged [(ncol(covar.merged)-1):ncol(covar.merged)]
+head(cov)
+rownames(cov) <- covar.merged [,1]
+counts <- data.matrix(covar.merged [,2:(ncol(covar.merged)-2)])
+rownames(counts) <- covar.merged [,1]
+stopifnot(all(rownames(counts) == rownames(cov)))
+#run cqn using lenth and gc content of the samples
+cqn.d <- cqn(counts, lengths = cov$length, x = cov$gccontent, tau = 0.95, verbose = TRUE)
+
+# create new DEG object implementing the offset
+y <- DGEList(counts=counts,group=group)
+design <- model.matrix(~0 + group + NPM1status + sex + FLT3status + RUNX1status)
+rownames(design) <- colnames(y)
+design
+offset <- cqn.d$glm.offset
+y <- scaleOffset(y, offset)
+y.cqn <- estimateDisp(y, design, robust=TRUE)
+y.cqn
+fit <- glmQLFit(y.cqn, design)
+#set contrasts
+conSA2 <- makeContrasts(groupSA2-groupctr, levels=design)
+conRAD21 <- makeContrasts(groupRad21-groupctr, levels=design)
+#resulttables
+res2 <- glmQLFTest(fit, contrast=conSA2)
+res21 <- glmQLFTest(fit, contrast=conRAD21)
+```
+
+## Enrichment H3K27ac at differential RAD21 peaks
+```{r}
+# factors to define all types of differential peaks to analyse
+MUTS<-c("SA2mut","RAD21mut")
+peaktypesRAD_SA2mut<-c("Peaks_DESEQ", "stringentPeaks_DESEQ")
+peaktypesRAD_RAD21mut<-c("Peaks_DESEQ", "stringentPeaks_DESEQ")
+filtsRAD<-c("2folddown", "2foldup")
+
+# read in peakset bedfiles (H3K27ac peaks overlapping RAD21 diff.peaks) and index the fit
+H3KRADdiff<-vector(mode = "list", length = 0)
+for (FILT in filtsRAD){
+   for (PT in peaktypesRAD_SA2mut){
+     H3KRADdiff[[paste0("SA2mutvsCTRL.RAD21.", PT, ".model.",FILT,"AssEnhancers")]]<-read.table(file.path(RAD21diffpeaksH3Koverlap,paste0("SA2mut","vsCTRL.RAD21.", PT, ".model.",FILT,".AssEnhancers.bed")))
+     H3KRADdiff[[paste0("IND_SA2mutvsCTRL.RAD21.", PT, ".model.",FILT,"AssEnhancers")]]<-rownames(fit) %in% H3KRADdiff[[paste0("SA2mutvsCTRL.RAD21.", PT, ".model.",FILT,"AssEnhancers")]]$V4
+     }
+   for (PT in peaktypesRAD_RAD21mut){
+     H3KRADdiff[[paste0("RAD21mutvsCTRL.RAD21.", PT, ".model.",FILT,"AssEnhancers")]]<-read.table(file.path(RAD21diffpeaksH3Koverlap,paste0("RAD21mut","vsCTRL.RAD21.", PT, ".model.",FILT,".AssEnhancers.bed")))
+     H3KRADdiff[[paste0("IND_RAD21mutvsCTRL.RAD21.", PT, ".model.",FILT,"AssEnhancers")]]<-rownames(fit) %in% H3KRADdiff[[paste0("RAD21mutvsCTRL.RAD21.", PT, ".model.",FILT,"AssEnhancers")]]$V4
+     }
+}
+#add paired up+down index lists
+for (PT in peaktypesRAD_SA2mut){
+H3KRADdiff[[paste0("paired.IND_SA2mutvsCTRL.RAD21.", PT)]]<-list(H3KRADdiff[[paste0("IND_SA2mutvsCTRL.RAD21.", PT, ".model.","2foldup","AssEnhancers")]],H3KRADdiff[[paste0("IND_SA2mutvsCTRL.RAD21.", PT, ".model.","2folddown","AssEnhancers")]])
+names(H3KRADdiff[[paste0("paired.IND_SA2mutvsCTRL.RAD21.", PT)]])<-c(paste0("up.RAD21.",PT),paste0("down.RAD21.",PT))
+}
+for (PT in peaktypesRAD_RAD21mut){
+H3KRADdiff[[paste0("paired.IND_RAD21mutvsCTRL.RAD21.", PT)]]<-list(H3KRADdiff[[paste0("IND_RAD21mutvsCTRL.RAD21.", PT, ".model.","2foldup","AssEnhancers")]],H3KRADdiff[[paste0("IND_RAD21mutvsCTRL.RAD21.", PT, ".model.","2folddown","AssEnhancers")]])
+names(H3KRADdiff[[paste0("paired.IND_RAD21mutvsCTRL.RAD21.", PT)]])<-c(paste0("up.RAD21.",PT),paste0("down.RAD21.",PT))
+}
+
+#fry the fit for the paired indices and the repective contrasts
+for (PT in peaktypesRAD_SA2mut){
+H3KRADdiff[[paste0("PSEA_SA2mutvsCTRL.RAD21.", PT)]]<-fry(y.cqn, index=H3KRADdiff[[paste0("paired.IND_SA2mutvsCTRL.RAD21.", PT)]], design=design, contrast=conSA2)
+}
+for (PT in peaktypesRAD_RAD21mut){
+H3KRADdiff[[paste0("PSEA_RAD21mutvsCTRL.RAD21.", PT)]]<-fry(y.cqn, index=H3KRADdiff[[paste0("paired.IND_RAD21mutvsCTRL.RAD21.", PT)]], design=design, contrast=conRAD21)
+}
+
+#plot barcode plots displaying fry results for both patient groups
+for (PT in peaktypesRAD_SA2mut){
+PSE<-H3KRADdiff[[paste0("PSEA_SA2mutvsCTRL.RAD21.", PT)]]
+pdf(file=file.path(FIGURESDIRH3K,"GSEA",paste0("PSEA.SA2mut.H3K27acpeaks.RAD21diffpeaks",PT,".barcodeplot.pdf")), height=6, width=6)
+barcodeplot(res2$table$logFC, 
+            index=H3KRADdiff[[paste0("IND_SA2mutvsCTRL.RAD21.", PT, ".model.","2foldup","AssEnhancers")]] ,
+            index2=H3KRADdiff[[paste0("IND_SA2mutvsCTRL.RAD21.", PT, ".model.","2folddown","AssEnhancers")]],
+            labels=c("CTRL","SA2mut"),
+            xlab = bquote(log[2]*"FC in H3K27ac ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("H3K27ac at differential RAD21 peaks"," (", PT," )"), cex.main=0.5,
+            col.bars=c("seagreen","firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: enhancers with increased RAD21 '~'('*.(PSE[paste0("up.RAD21.",PT),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSE[paste0("up.RAD21.",PT),"FDR"])*'('*.(PSE[paste0("up.RAD21.",PT),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('red bars: enhancers with reduced RAD21  '~'('*.(PSE[paste0("down.RAD21.",PT),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSE[paste0("down.RAD21.",PT),"FDR"])*'('*.(PSE[paste0("down.RAD21.",PT),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+
+for (PT in peaktypesRAD_RAD21mut){
+PSE<-H3KRADdiff[[paste0("PSEA_RAD21mutvsCTRL.RAD21.", PT)]]
+pdf(file=file.path(FIGURESDIRH3K,"GSEA",paste0("PSEA.RAD2mut.H3K27acpeaks.RAD21diffpeaks",PT,".barcodeplot.pdf")), height=6, width=6)
+barcodeplot(res2$table$logFC, 
+            index=H3KRADdiff[[paste0("IND_RAD21mutvsCTRL.RAD21.", PT, ".model.","2foldup","AssEnhancers")]] ,
+            index2=H3KRADdiff[[paste0("IND_RAD21mutvsCTRL.RAD21.", PT, ".model.","2folddown","AssEnhancers")]],
+            labels=c("CTRL","RAD2mut"),
+            xlab = bquote(log[2]*"FC in H3K27ac ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("H3K27ac at differential RAD21 peaks"," (", PT," )"), cex.main=0.5,
+            col.bars=c("mediumvioletred","firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('violet bars: enhancers with increased RAD21 '~'('*.(PSE[paste0("up.RAD21.",PT),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSE[paste0("up.RAD21.",PT),"FDR"])*'('*.(PSE[paste0("up.RAD21.",PT),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('red bars: enhancers with reduced RAD21  '~'('*.(PSE[paste0("down.RAD21.",PT),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSE[paste0("down.RAD21.",PT),"FDR"])*'('*.(PSE[paste0("down.RAD21.",PT),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+```
+
+## Enrichement H3K27ac at diff. Loop EP anchors with cohesin
+```{r}
+##read in bed files genereated in loop anchor analysis
+MUTS<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+#read in Peaksets to test
+H3KanchEP<-list()
+for (MUT in MUTS) {
+  for (FILT in Filts){
+path<-file.path(diffanchorsn2t,"H3K27overlap",paste0(MUT,"vsCTRL.loopAnchors.red.", FILT, ".H3K27accentred.RAD21overlap.bed")) #contains the peak IDs of the H3K27ac peak
+newentry<-read.table(path, header=F, sep="\t")
+H3KanchEP[[paste0(FILT,"_",MUT)]]<-newentry$V4 #column 4 is the peak name that is required for indexing the fit
+  }
+}
+
+# create  indices for the fit for the H3K27ac peaks in diff. anchors identified in SA2mut vs CTRL AML
+ind_up.FC1_SA2mut_Anch <- rownames(fit) %in% H3KanchEP[["up.FC1_SA2mut"]]
+ind_down.FC1_SA2mut_Anch <- rownames(fit) %in% H3KanchEP[["down.FC1_SA2mut"]]
+# combined list of indices for strengthened and weakened anchor associated features
+SA2indEP_Anch<-list(ind_up.FC1_SA2mut_Anch,ind_down.FC1_SA2mut_Anch) 
+names(SA2indEP_Anch) <- c("up.FC1_SA2mut_Anch","down.FC1_SA2mut_Anch")
+
+#fry these indices in the SA2mut vs CTRL-AML contrast
+fr_SA2indEP_Anch <- fry(y.cqn, index=SA2indEP_Anch, design=design, contrast=conSA2)
+gse_SA2indEP_Anch <- fr_SA2indEP_Anch[names(SA2indEP_Anch),] %>% tibble::rownames_to_column("Set")
+gse_SA2indEP_Anch
+
+#visualize these enrcichments in a barcode plot
+SA2indEPstr_Anch <- c("ind_up.FC1_SA2mut_Anch","ind_down.FC1_SA2mut_Anch")
+row.names(gse_SA2indEP_Anch)<-SA2indEPstr_Anch
+pdf(file=file.path(FIGURESDIR,"GSEA","PSEA.SA2mut.H3K27acpeaks.EP.diffloopanchors.FC1.barcodeplot.pdf"), height=6, width=6)
+barcodeplot(res2$table$logFC, 
+            index=ind_up.FC1_SA2mut_Anch ,
+            index2=ind_down.FC1_SA2mut_Anch,
+            labels=c("CTRL","SA2mut"),
+            xlab = bquote(log[2]*"FC in H3K27ac ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("H3K27ac at differential E-P loop anchors"), cex.main=0.5,
+            col.bars=c("seagreen","firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: enhancers at strengthened E-P loop anchors '~'('*.(gse_SA2indEP_Anch["ind_up.FC1_SA2mut_Anch","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(gse_SA2indEP_Anch["ind_up.FC1_SA2mut_Anch","FDR"])*'('*.(gse_SA2indEP_Anch["ind_up.FC1_SA2mut_Anch","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('red bars: enhancers at weakened E-P loop anchors  '~'('*.(gse_SA2indEP_Anch["ind_down.FC1_SA2mut_Anch","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(gse_SA2indEP_Anch["ind_down.FC1_SA2mut_Anch","FDR"])*'('*.(gse_SA2indEP_Anch["ind_down.FC1_SA2mut_Anch","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+
+# same for features identified in RAD21mut vs CTRL
+### create  indices for the fit for the H3K27ac peaks in diff. anchors identified in RAD21mut vs CTRL AML
+ind_up.FC1_RAD21mut_Anch <- rownames(fit) %in% H3KanchEP[["up.FC1_RAD21mut"]]
+ind_down.FC1_RAD21mut_Anch <- rownames(fit) %in% H3KanchEP[["down.FC1_RAD21mut"]]
+RAD21indEP_Anch<-list(ind_up.FC1_RAD21mut_Anch,ind_down.FC1_RAD21mut_Anch)
+names(RAD21indEP_Anch) <- c("up.FC1_RAD21mut_Anch","down.FC1_RAD21mut_Anch")
+##RAD21mut  vs CTRL fry
+fr_RAD21indEP_Anch <- fry(y.cqn, index=RAD21indEP_Anch, design=design, contrast=conRAD21)
+gse_RAD21indEP_Anch <- fr_RAD21indEP_Anch[names(RAD21indEP_Anch),] %>% tibble::rownames_to_column("Set")
+gse_RAD21indEP_Anch
+##RAD21mut  vs CTRL barcodplot
+RAD21indEPstr_Anch <- c("ind_up.FC1_RAD21mut_Anch","ind_down.FC1_RAD21mut_Anch")
+row.names(gse_RAD21indEP_Anch)<-RAD21indEPstr_Anch
+pdf(file=file.path(FIGURESDIR,"GSEA","PSEA.RAD21mut.H3K27acpeaks.EP.diffloopanchors.FC1.barcodeplot.pdf"), height=6, width=6)
+barcodeplot(res2$table$logFC, 
+            index=ind_up.FC1_RAD21mut_Anch ,
+            index2=ind_down.FC1_RAD21mut_Anch,
+            labels=c("CTRL","RAD21mut"),
+            xlab = bquote(log[2]*"FC in H3K27ac ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("H3K27ac at differential E-P loop anchors"), cex.main=0.5,
+            col.bars=c("mediumvioletred","firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('violet bars: enhancers at strengthened E-P loop anchors '~'('*.(gse_RAD21indEP_Anch["ind_up.FC1_RAD21mut_Anch","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(gse_RAD21indEP_Anch["ind_up.FC1_RAD21mut_Anch","FDR"])*'('*.(gse_RAD21indEP_Anch["ind_up.FC1_RAD21mut_Anch","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('red bars: enhancers at weakened E-P loop anchors  '~'('*.(gse_RAD21indEP_Anch["ind_down.FC1_RAD21mut_Anch","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(gse_RAD21indEP_Anch["ind_down.FC1_RAD21mut_Anch","FDR"])*'('*.(gse_RAD21indEP_Anch["ind_down.FC1_RAD21mut_Anch","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+```
+
+
+## H3K27ac at diffloop EP anchors with cohesin: divided by Enhancer Promoter status
+```{r}
+MUTS<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+types<-c("EP_anchors_enhancers", "EP_anchors_promoters", "PP_anchors_promoters.plus", "PP_anchors_promoters.minus", "EE_anchors_enhancers.plus", "EE_anchors_enhancers.minus")
+
+#read in the previously generated H3K27ac bedfiles split by enhacner-promoter status and create indices for the H3K27ac-fit
+EPpairslist<-list()
+for (MUT in MUTS) {
+  for (FILT in Filts){
+      for (type in types){
+path<-file.path(EPpairs,paste0(MUT,"_",FILT,"_paired_",type,".H3K27ac.2wayoverlap.bed"))
+EPpairslist[[paste0(FILT,"_",MUT,"_",type)]]<-read.table(path, header=F, sep="\t")
+EPpairslist[[paste0(FILT,"_",MUT,"_",type)]]<-EPpairslist[[paste0(FILT,"_",MUT,"_",type)]][EPpairslist[[paste0(FILT,"_",MUT,"_",type)]]$V8 !=".",] #filter out non-overlapping features
+EPpairslist[[paste0(FILT,"_",MUT,"_",type,"_ind")]]<-rownames(fit) %in% EPpairslist[[paste0(FILT,"_",MUT,"_",type)]]$V8 #index for the fit
+##combined Promoters
+EPpairslist[[paste0("ind_promoters_",MUT,FILT)]]<-rownames(fit) %in% c(EPpairslist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$V8,EPpairslist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$V8,EPpairslist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$V8)
+##combined Enhancers
+EPpairslist[[paste0("ind_enhancers_",MUT,FILT)]]<-rownames(fit) %in% c(EPpairslist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$V8,EPpairslist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]$V8,EPpairslist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]$V8)
+}}}
+
+
+#combined index lists of up (strengthened) and down (weakened) Loop-anchor-associated H3K27ac peaks
+for (MUT in MUTS) {
+##combined E-P pairs
+EPpairslist[[paste0("indEPall_",MUT)]]<-list(EPpairslist[[paste0("up.FC1_",MUT,"_EP_anchors_enhancers_ind")]],EPpairslist[[paste0("down.FC1_",MUT,"_EP_anchors_enhancers_ind")]],
+EPpairslist[[paste0("up.FC1_",MUT,"_EP_anchors_promoters_ind")]],EPpairslist[[paste0("down.FC1_",MUT,"_EP_anchors_promoters_ind")]])
+names(EPpairslist[[paste0("indEPall_",MUT)]])<-c("up.FC1_EP_anchors_enhancers","down.FC1_EP_anchors_enhancers","up.FC1_EP_anchors_promoters","down.FC1_EP_anchors_promoters")
+##combined Promoters
+EPpairslist[[paste0("indPROMall_",MUT)]]<-list(EPpairslist[[paste0("ind_promoters_",MUT,"up.FC1")]],EPpairslist[[paste0("ind_promoters_",MUT,"down.FC1")]])
+names(EPpairslist[[paste0("indPROMall_",MUT)]])<-c("up.FC1_promoters","down.FC1_promoters")
+##combined Enhancers
+EPpairslist[[paste0("indENHall_",MUT)]]<-list(EPpairslist[[paste0("ind_enhancers_",MUT,"up.FC1")]],EPpairslist[[paste0("ind_enhancers_",MUT,"down.FC1")]])
+names(EPpairslist[[paste0("indENHall_",MUT)]])<-c("up.FC1_enhancers","down.FC1_enhancers")
+##combined Enhancers/Promoters
+EPpairslist[[paste0("indENH_PROM_all_",MUT)]]<-c(EPpairslist[[paste0("indPROMall_",MUT)]],EPpairslist[[paste0("indENHall_",MUT)]])
+}
+
+#Enrichment analysis usign fry
+fr_indEPall_SA2mut <- fry(y.cqn, index=EPpairslist[["indEPall_SA2mut"]], design=design, contrast=conSA2)
+#                              NGenes Direction      PValue        FDR
+#down.FC1_EP_anchors_promoters    190      Down 0.004252480 0.01239874
+#down.FC1_EP_anchors_enhancers    197      Down 0.006199372 0.01239874
+#up.FC1_EP_anchors_promoters      127      Down 0.023169879 0.03089317
+#up.FC1_EP_anchors_enhancers       96      Down 0.350021079 0.35002108
+fr_indPROMall_SA2mut <- fry(y.cqn, index=EPpairslist[["indPROMall_SA2mut"]], design=design, contrast=conSA2)
+#                   NGenes Direction      PValue         FDR PValue.Mixed
+#up.FC1_promoters      274      Down 0.001788906 0.002908966 9.261753e-05
+#down.FC1_promoters    403      Down 0.002908966 0.002908966 1.772446e-06
+fr_indENHall_SA2mut <- fry(y.cqn, index=EPpairslist[["indENHall_SA2mut"]], design=design, contrast=conSA2)
+#                   NGenes Direction     PValue        FDR PValue.Mixed
+#down.FC1_enhancers    440      Down 0.02923478 0.05846957 1.165945e-06
+#up.FC1_enhancers      250      Down 0.23236924 0.23236924 6.013037e-06
+fr_indENH_PROM_all_SA2mut <- fry(y.cqn, index=EPpairslist[["indENH_PROM_all_SA2mut"]], design=design, contrast=conSA2)
+#                   NGenes Direction      PValue         FDR PValue.Mixed
+#up.FC1_promoters      274      Down 0.001788906 0.005817931 9.261753e-05
+#down.FC1_promoters    403      Down 0.002908966 0.005817931 1.772446e-06
+#down.FC1_enhancers    440      Down 0.029234784 0.038979713 1.165945e-06
+#up.FC1_enhancers      250      Down 0.232369241 0.232369241 6.013037e-06
+
+#all in list
+conslist<-list(SA2mut=conSA2,RAD21mut=conRAD21)
+PSEAlist<-list()
+for (MUT in MUTS) {
+  PSEAlist[[paste0(MUT,"fr_indEPall")]] <- fry(y.cqn, index=EPpairslist[[paste0("indEPall_",MUT)]], design=design, contrast=conslist[[MUT]])
+  PSEAlist[[paste0(MUT,"fr_indENHall")]] <- fry(y.cqn, index=EPpairslist[[paste0("indENHall_",MUT)]], design=design, contrast=conslist[[MUT]])
+  PSEAlist[[paste0(MUT,"fr_indPROMall")]] <- fry(y.cqn, index=EPpairslist[[paste0("indPROMall_",MUT)]], design=design, contrast=conslist[[MUT]])
+  PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]] <- fry(y.cqn, index=EPpairslist[[paste0("indENH_PROM_all_",MUT)]], design=design, contrast=conslist[[MUT]])
+}
+
+
+colorlist<-list(SA2mut="seagreen3",RAD21mut="mediumvioletred")
+reslist<-list(SA2mut=res2$table$logFC,RAD21mut=res21$table$logFC)
+typesEorP<-c("promoters","enhancers")
+# barcodeplots for paired E/P loops focused analysis
+dir.create(file.path(FIGURESDIR,"GSEA","pairedEP"))
+for (MUT in MUTS) {
+  for (type in typesEorP) {
+text1<-paste0(colorlist[[MUT]],' bars: ',type,' at strengthened E-P loop anchors ')
+text2<-paste0('red bars: ',type,' at weakended E-P loop anchors ')
+pdf(file=file.path(FIGURESDIR,"GSEA","pairedEP",paste0("PSEA.",MUT,".H3K27acpeaks.diffloop.FC1.barcodeplot.pairedEP.",type,".pdf")), height=6, width=6)
+barcodeplot(reslist[[MUT]], 
+            index=EPpairslist[[paste0("up.FC1_",MUT,"_EP_anchors_",type,"_ind")]] ,
+            index2=EPpairslist[[paste0("down.FC1_",MUT,"_EP_anchors_",type,"_ind")]],
+            labels=c("CTRL",MUT),
+            xlab = bquote(log[2]*"FC in H3K27ac ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("H3K27ac at differential E-P loop anchors"), cex.main=0.5,
+            col.bars=c(colorlist[[MUT]],"firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote(.(text1)~'('*.(PSEAlist[[paste0(MUT,"fr_indEPall")]][paste0("up.FC1_EP_anchors_",type),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(MUT,"fr_indEPall")]][paste0("up.FC1_EP_anchors_",type),"FDR"])*'('*.(PSEAlist[[paste0(MUT,"fr_indEPall")]][paste0("up.FC1_EP_anchors_",type),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote(.(text2)~'('*.(PSEAlist[[paste0(MUT,"fr_indEPall")]][paste0("down.FC1_EP_anchors_",type),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(MUT,"fr_indEPall")]][paste0("down.FC1_EP_anchors_",type),"FDR"])*'('*.(PSEAlist[[paste0(MUT,"fr_indEPall")]][paste0("down.FC1_EP_anchors_",type),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+
+# barcodeplots for all E/P PP EE loops focused analysis
+for (MUT in MUTS) {
+  for (type in typesEorP) {
+text1<-paste0(colorlist[[MUT]],' bars: ',type,' at strengthened loop anchors ')
+text2<-paste0('red bars: ',type,' at weakended loop anchors ')
+pdf(file=file.path(FIGURESDIR,"GSEA","pairedEP",paste0("PSEA.",MUT,".H3K27acpeaks.diffloop.FC1.barcodeplot.pairedEPEEPP.",type,".pdf")), height=6, width=6)
+barcodeplot(reslist[[MUT]], 
+            index=EPpairslist[[paste0("ind_",type,"_",MUT,"up.FC1")]] ,
+            index2=EPpairslist[[paste0("ind_",type,"_",MUT,"down.FC1")]],
+            labels=c("CTRL",MUT),
+            xlab = bquote(log[2]*"FC in H3K27ac ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("H3K27ac at differential E-P/E-E/P-P loop anchors"), cex.main=0.5,
+            col.bars=c(colorlist[[MUT]],"firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote(.(text1)~'('*.(PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]][paste0("up.FC1_",type),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]][paste0("up.FC1_",type),"FDR"])*'('*.(PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]][paste0("up.FC1_",type),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote(.(text2)~'('*.(PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]][paste0("down.FC1_",type),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]][paste0("down.FC1_",type),"FDR"])*'('*.(PSEAlist[[paste0(MUT,"fr_indENH_PROM_all")]][paste0("down.FC1_",type),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+
+```

@@ -1,0 +1,16 @@
+Name	R1	R2	associated_Project	group	Cell_type	donor	short_ID	Vial_ID	sample_Source	Library_prep_location
+HiC_AML_ctr_16911	HiC_AML_ctr_16911_R1.fastq.gz	HiC_AML_ctr_16911_R2.fastq.gz	Cohesin	ctr	patient	2236	ctr_2236	16911	Rotterdam	Regensburg
+HiC_AML_ctr_18136	HiC_AML_ctr_18136_Rep1_R1.fastq.gz	HiC_AML_ctr_18136_Rep1_R2.fastq.gz	Cohesin	ctr	patient	1551	ctr_1551	18136	Rotterdam	Regensburg
+HiC_AML_ctr_18519	HiC_AML_ctr_18519_R1.fastq.gz	HiC_AML_ctr_18519_R2.fastq.gz	Cohesin	ctr	patient	1747	ctr_1747	18519	Rotterdam	Regensburg
+HiC_AML_ctr_19405	HiC_AML_ctr_19405_Rep1_R1.fastq.gz	HiC_AML_ctr_19405_Rep1_R2.fastq.gz	Cohesin	ctr	patient	3323	ctr_3323	19405	Rotterdam	Regensburg
+HiC_AML_ctr_19416	HiC_AML_ctr_19416_R1.fastq.gz	HiC_AML_ctr_19416_R2.fastq.gz	Cohesin	ctr	patient	3488	ctr_3488	19416	Rotterdam	Regensburg
+HiC_AML_ctr_21047	HiC_AML_ctr_21047_Rep1_R1.fastq.gz	HiC_AML_ctr_21047_Rep1_R2.fastq.gz	Cohesin	ctr	patient	6246	ctr_6246	21047	Rotterdam	Regensburg
+HiC_AML_ctr_21290	HiC_AML_ctr_21290_R1.fastq.gz	HiC_AML_ctr_21290_R2.fastq.gz	Cohesin	ctr	patient	5285	ctr_5285	21290	Rotterdam	Regensburg
+HiC_AML_RAD21_UKR186	HiC_RAD21_UKR186_Rep1_R1.fastq.gz	HiC_RAD21_UKR186_Rep1_R2.fastq.gz	Cohesin	RAD21mut	patient	UKR186	RAD21mut_UKR186	UKR186	Regensburg	Regensburg
+HiC_AML_RAD21_23039	HiC_AML_RAD21_23039_R1.fastq.gz	HiC_AML_RAD21_23039_R2.fastq.gz	Cohesin	RAD21mut	patient	7314	RAD21mut_7314	23039	Rotterdam	Regensburg
+HiC_AML_RAD21_26830	HiC_AML_RAD21_26830_R1.fastq.gz	HiC_AML_RAD21_26830_R2.fastq.gz	Cohesin	RAD21mut	patient	12557	RAD21mut_12557	26830	Rotterdam	Regensburg
+HiC_AML_RAD21_38455	HiC_AML_RAD21_38455_R1.fastq.gz	HiC_AML_RAD21_38455_R2.fastq.gz	Cohesin	RAD21mut	patient	41580a	RAD21mut_41580a	38455	Rotterdam	Regensburg
+HiC_AML_SA2_24743	HiC_AML_SA2_24743_R1.fastq.gz	HiC_AML_SA2_24743_R2.fastq.gz	Cohesin	SA2mut	patient	12514	SA2mut_12514	24743	Rotterdam	Regensburg
+HiC_AML_SA2_27396	HiC_AML_SA2_27396_Rep1_R1.fastq.gz	HiC_AML_SA2_27396_Rep1_R2.fastq.gz	Cohesin	SA2mut	patient	12567	SA2mut_12567	27396	Rotterdam	Regensburg
+HiC_AML_SA2_29728	HiC_AML_SA2_29728_R1.fastq.gz	HiC_AML_SA2_29728_R2.fastq.gz	Cohesin	SA2mut	patient	24603	SA2mut_24603	29728	Rotterdam	Regensburg
+HiC_AML_SA2_9708	HiC_AML_SA2_9708_Rep2_R1.fastq.gz	HiC_AML_SA2_9708_Rep2_R2.fastq.gz	Cohesin	SA2mut	patient	2193	SA2mut_2193	9708	Rotterdam	Regensburg

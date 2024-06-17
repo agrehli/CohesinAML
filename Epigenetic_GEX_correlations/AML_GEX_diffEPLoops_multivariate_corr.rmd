@@ -1,0 +1,517 @@
+---
+title: "Multivariate correlation Analysis: GEX - Looping - Chromatin features"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+
+# Loading libraries and set directories
+```{r}
+# libraries
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(cowplot)
+# paths
+DIR_DATA="/misc/data"
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML")
+
+CHIPDIR<-file.path(WORKDIR,"ChIP_analysis")
+peakdir<-file.path(CHIPDIR,"peaks")
+diffpeakdir<-file.path(CHIPDIR,"diffPeaks")
+diffpeakdirH3K<-file.path(WORKDIR,"ChIP_analysis/H3K27ac/diffPeaks")
+diffpeakdirSA1vsSA2<-file.path(diffpeakdir,"SA1vsSA2")
+GEXdir<-file.path(WORKDIR,"RNAseq/Analysis/Resulttables/RNAseq_Cohesin_AML_AF3")
+ATACdir<-file.path(WORKDIR,"ATAC")
+
+LOOPDIR=file.path(WORKDIR,"HiC/loops")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+AllEorEP=file.path(diffanchorsn2t,"H3K27overlap")
+AnchorsOverlapPairs<-file.path(diffanchorsn2t,"AnchorsOverlapPairs")
+TSSOverlap<-file.path(AnchorsOverlapPairs,"TSSoverlap")
+
+# variables
+MUTs<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+```
+
+# Correlations analysis (fold-changes): H3K27ac associated loop anchor changes: looping - GEX - ChIP - ATAC
+## read peaks in anchors cented on H3K27ac or RAD21 peaks plus loop anchorID and coords
+```{r}
+overlaptypes<-c("CohesinAssEnhancers","CohesinAssEnhancers.RAD21centred")
+loopstatsbedALL<-vector(mode = "list", length = 0)
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in overlaptypes){
+path<-file.path(AllEorEP,"2wayOverlap",paste0(MUT,"vsCTRL.loopAnchors.red.",FILT,".",type,".2wayOverlap.bed"))
+loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]]<-loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]][,c(1:4,6:11)]
+colnames(loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]])<-c("Anchorchr","Anchorstart","Anchorend","AnchorID","Anchorstrand","peakchr","peakstart","peakend","peakname","peakoverlap") #rename columns
+}}}
+
+for (MUT in MUTs) {
+  for (FILT in Filts){
+path<-file.path(AllEorEP,"TSSanchorOverlap",paste0(MUT,"vsCTRL.loopAnchors.red.",FILT,".CohesinAssEnhancers.Overlap.TSS.2wayoverlap.bed"))
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE)
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]][,c(1:4,6:11)]
+colnames(loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])<-c("Anchorchr","Anchorstart","Anchorend","AnchorID","Anchorstrand","TSSchr","TSSstart","TSSend","TSSname","TSSoverlap") #rename columns
+}}
+```
+## generate a loop - TSS table: one entry per unique TSS name Loop ID combination
+### get TSS loop combinations
+```{r}
+loopstatsbedALL2<-loopstatsbedALL
+#get unique TSS combiantion of Loop name and TSS ID --> duplicates are ok since one TSS can be in anchors of multiple loops but combinations have to be unique
+for (MUT in MUTs) {
+  for (FILT in Filts){
+loopstatsbedALL2[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]$Loopname<-sapply(loopstatsbedALL2[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]$AnchorID,function(x) strsplit(as.character(x), "_")[[1]][1])
+loopstatsbedALL2[[paste0("TSS_Loop_combination_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-unique(loopstatsbedALL2[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]][,c('TSSname','Loopname')])
+loopstatsbedALL2[[paste0("TSS_Loop_combination_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-subset(loopstatsbedALL2[[paste0("TSS_Loop_combination_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_combination_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]$TSSname!=".")
+}}
+
+##add gene and Loop FC + Padj.
+LoopdiffresSA2<-read.table(file.path(LOOPDIR,"DESEQn2total","SA2mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=TRUE)
+LoopdiffresRAD21<-read.table(file.path(LOOPDIR,"DESEQn2total","RAD21mutvsCTRL.merged.loop.scores.DESeq.norm2Total.loopcoords2.txt"),header=TRUE)
+Loopdifflist<-list(LoopdiffresSA2,LoopdiffresRAD21)
+names(Loopdifflist)<-c("SA2mut","RAD21mut")
+
+for (MUT in MUTs) {
+    for (FILT in Filts){
+df<-data.frame(loopstatsbedALL2[[paste0("TSS_Loop_combination_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])
+GEX<-subset(GEXlist[[MUT]],!(GEXlist[[MUT]]$genes %in% GEXlist[[MUT]][duplicated(GEXlist[[MUT]]$genes),"genes"]))
+Loops<-Loopdifflist[[MUT]]
+df$GEX_FC<-NA
+df$GEX_Padj<-NA
+df$Loop_FC<-NA
+df$Loop_Padj<-NA
+TSSinset<-df$TSSname
+TSSexpressed<-subset(GEX,GEX$genes %in% TSSinset)[,"genes"]
+for (TSS in TSSexpressed){
+df[df$TSSname==TSS,"GEX_FC"]<-GEX[GEX$genes==TSS,"logFC"]
+df[df$TSSname==TSS,"GEX_Padj"]<-GEX[GEX$genes==TSS,"FDR"]
+}
+Loopsinset<-c(df$Loopname)
+for (Loop in Loopsinset){
+df[df$Loopname==Loop,"Loop_FC"]<-Loops[Loops$Row.names==Loop,"log2FoldChange"]
+df[df$Loopname==Loop,"Loop_Padj"]<-Loops[Loops$Row.names==Loop,"padj"]
+loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-df
+}
+}}
+##combine up and down loops
+for (MUT in MUTs) {
+df<-rbind(loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_up.FC1_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_down.FC1_",MUT)]])
+df<-df[!(is.na(df$GEX_FC)),]
+df$sigcatGEX<-"ns"
+df[(df$GEX_Padj<0.05),"sigcatGEX"]<-"sig"
+loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_",MUT)]]<-df
+}
+
+
+```
+
+### plot GEX FC vs Loop FC
+```{r}
+dir.create(file.path(WORKDIR,"HiC/figures/EPTSScorr"))
+
+p2<-ggplot(data=loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_SA2mut")]], aes(x = Loop_FC, y = GEX_FC))+
+geom_point(aes(color = sigcatGEX,alpha= sigcatGEX))+
+scale_alpha_manual(values=c("ns" = 0.5, "sig" =   1),guide = 'none')+
+scale_color_manual(values=c("ns" = "grey", "sig" =  "red"),labels=c("not significant","Padj. < 0.05"),name="Gene Expression")+
+#geom_smooth(data=loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_SA2mut")]],aes(x = Loop_FC, y = GEX_FC),method='lm')+
+xlab("Loop log2FC")+ylab("GEX log2FC")+ggtitle("STAG2 mut: Genes with promotors \n in differential Loop Anchors")+
+theme_classic()+
+theme(legend.position = "bottom",
+        axis.title = element_text(size = rel(2)),
+        axis.text = element_text(size = rel(2)),
+        legend.text = element_text(size = rel(1.2)),
+        legend.title = element_text(size = rel(1.2)),
+      )
+ggsave(p2,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","SA2mut.GEXofTSSvsLoopLogf.sig.EPanchorloops.pdf"),height=5,width=5.5)
+
+#add labels for genes
+SA2mutsigGEX<-loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_SA2mut")]][loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_SA2mut")]]$sigcat=="sig",]
+
+p2lab<-p2+geom_text_repel(aes(x = Loop_FC, y = GEX_FC), data = SA2mutsigGEX, label = SA2mutsigGEX$TSSname,cex=2,max.overlaps=30,min.segment.length = 0 ,segment.size=0.1)
+ggsave(p2lab,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","SA2mut.GEXofTSSvsLoopLogf.sig.EPanchorloops.genelab.pdf"),height=5,width=5.5)
+write.table(SA2mutsigGEX,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","SA2mut.GEXofTSSvsLoopLogf.siggenes.txt"),sep="\t",quote=FALSE)
+
+#add labels for genes: stricter filt to reduce labs
+SA2mutsigGEXstr<-subset(SA2mutsigGEX,(GEX_FC>1|GEX_FC<(-1)))
+p2lab2<-p2+geom_text_repel(aes(x = Loop_FC, y = GEX_FC), data = SA2mutsigGEXstr, label = SA2mutsigGEXstr$TSSname,cex=4,max.overlaps=30,min.segment.length = 0 ,segment.size=0.1)+
+geom_hline(yintercept = -1,linetype = 'dashed',alpha=0.5)+geom_hline(yintercept = 1,linetype = 'dashed',alpha=0.5)+ylim(-5,3)+xlim(-3,3)
+ggsave(p2lab2,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","SA2mut.GEXofTSSvsLoopLogf.sig.EPanchorloops.genelab.logFC1.pdf"),height=5,width=5.5)
+
+#percentage of significant hits
+df<-loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_SA2mut")]]
+sig<-subset(df,sigcatGEX=="sig")
+percdiff<-length(unique(sig$TSSname))/length(unique(df$TSSname))
+percdiff #0.06598985
+
+
+##for RAD21mut
+p3<-ggplot(data=loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_RAD21mut")]], aes(x = Loop_FC, y = GEX_FC))+
+geom_point(aes(color = sigcatGEX,alpha=sigcatGEX))+
+scale_alpha_manual(values=c("ns" = 0.5, "sig" =   1),guide = 'none')+
+scale_color_manual(values=c("ns" = "grey", "sig" =  "red"),labels=c("not significant","Padj. < 0.05"),name="Gene Expression")+
+#geom_smooth(data=loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_RAD21mut")]],aes(x = Loop_FC, y = GEX_FC),method='lm')+
+xlab("Loop log2FC")+ylab("GEX log2FC")+ggtitle("RAD21 mut: Genes with promotors \n in differential Loop Anchors")+
+theme_classic()+
+theme(legend.position = "bottom",
+        axis.title = element_text(size = rel(2)),
+        axis.text = element_text(size = rel(2)),
+        legend.text = element_text(size = rel(1.2)),
+        legend.title = element_text(size = rel(1.2)),
+      )
+ggsave(p3,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","RAD21mut.GEXofTSSvsLoopLogf.sig.EPanchorloops.pdf"),height=5,width=5.5)
+
+#add labels for genes
+RAD21mutsigGEX<-loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_RAD21mut")]][loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_RAD21mut")]]$sigcat=="sig",]
+p3lab<-p3+geom_text_repel(aes(x = Loop_FC, y = GEX_FC), data = RAD21mutsigGEX, label = RAD21mutsigGEX$TSSname,cex=2,max.overlaps=30,min.segment.length = 0 ,segment.size=0.1)
+ggsave(p3lab,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","RAD21mut.GEXofTSSvsLoopLogf.sig.EPanchorloops.genelab.pdf"),height=5,width=5.5)
+write.table(RAD21mutsigGEX,file=file.path(WORKDIR,"HiC/figures/EPTSScorr","RAD21mut.GEXofTSSvsLoopLogf.siggenes.txt"),sep="\t",quote=FALSE)
+```
+
+
+## add Foldchange of RAD21 promoter peaks
+```{r}
+###get the table with TSS - RAD21 peak (stringent calling) FC correlation table
+strRAD21vsGEXlist<-list()
+strRAD21vsGEXlist[["SA2mut"]]<-read.table(file.path(GEXdir,"STAG2pat_vs_CTRL/STAG2mut.TSS.GEXFC.vs.str.RAD21peak.FC.txt"))
+strRAD21vsGEXlist[["RAD21mut"]]<-read.table(file.path(GEXdir,"RAD21pat_vs_CTRL/RAD21mut.TSS.GEXFC.vs.str.RAD21peak.FC.txt"))
+
+
+for (MUT in MUTs) {
+    for (FILT in Filts){
+df<-data.frame(loopstatsbedALL2[[paste0("TSS_Loop_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])
+df$RAD21_peakID<-NA
+#get all RAD21 peaks associated with TSS and add info to loop-GEX table
+TSSinRAD21<-subset(strRAD21vsGEXlist[[MUT]],strRAD21vsGEXlist[[MUT]]$GeneSymbol %in% df$TSSname)
+TSSinRAD21_2<-subset(TSSinRAD21,!(TSSinRAD21$GeneSymbol %in% GEXlist[[MUT]][duplicated(GEXlist[[MUT]]$genes),"genes"]))
+for (TSS in TSSinRAD21_2[,"GeneSymbol"]){
+RADpeaks<-strRAD21vsGEXlist[[MUT]][strRAD21vsGEXlist[[MUT]]$GeneSymbol==TSS,"PeakID"]  
+df[df$TSSname==TSS,"RAD21_peakID"]<-paste(unique(RADpeaks),collapse=",")
+}
+df2<-tidyr::separate_rows(df,RAD21_peakID,sep=",",convert=FALSE) #separate in case of multiple rad21 peaks in TSS
+df2<-data.frame(df2[!(is.na(df2$RAD21_peakID)|is.na(df2$GEX_FC)),]) #filter out Genes lacking RAD21 or expression FC values
+#add RAD21 statistics
+df2$RAD21_FC<-"NA"
+df2$RAD21_Padj<-"NA"
+for (RADID in df2$RAD21_peakID){
+df2[df2$RAD21_peakID==RADID,"RAD21_FC"]<-unique(TSSinRAD21_2[TSSinRAD21_2$PeakID==RADID,"logFC_RAD21"])
+df2[df2$RAD21_peakID==RADID,"RAD21_Padj"]<-unique(TSSinRAD21_2[TSSinRAD21_2$PeakID==RADID,"FDR_RAD21"])
+}
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-df2
+}}
+
+#combine up and down loops
+for (MUT in MUTs) {
+df<-rbind(loopstatsbedALL2[[paste0("TSS_Loop_RAD_combinationstats_CohesinAssEnhancers_DiffAnchors_up.FC1_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_RAD_combinationstats_CohesinAssEnhancers_DiffAnchors_down.FC1_",MUT)]])
+df<-df[!(is.na(df$GEX_FC)),]
+df$sigcatGEX<-"ns"
+df[(df$GEX_Padj<0.05),"sigcatGEX"]<-"sig"
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_",MUT)]]<-df
+}
+
+```
+
+### plot RAD21 at promoter vs loop FC
+```{r}
+
+dir.create(file.path(WORKDIR,"HiC/figures/EPTSScorr/RAD21FCvsLoopFC"))
+
+for (MUT in MUTs) { 
+test<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_combinationstats_CohesinAssEnhancers_DiffAnchors_UPDOWN_",MUT)]]
+test[,"RAD21_FC"] <- sapply(test[,"RAD21_FC"], as.numeric)
+test$sigcatRAD<-"ns"
+test[(test$RAD21_Padj<0.05),"sigcatRAD"]<-"sig"
+test$sigcatcomb<-factor(paste0(test$sigcatGEX,test$sigcatRAD),levels=c("nsns","signs","nssig","sigsig"))
+
+p2<-ggplot(data=test, aes(x = Loop_FC, y = RAD21_FC))+
+geom_point(aes(color = sigcatcomb,alpha= sigcatcomb))+
+scale_alpha_manual(values=c("nsns" = 0.5,"signs" = 0.7,"nssig" = 0.7, "sigsig" =   1),guide = 'none')+
+scale_color_manual(values=c("nsns" = "grey", "signs" = "firebrick3","nssig"="plum1","sigsig" =  "red"),labels=c("none","GEX", "RAD21","RAD21 and GEX"),name="GEX/RAD21 Padj < 0.05 in:")+
+xlab("Loop log2FC")+ylab("RAD21 log2FC")+ggtitle("STAG2 mut: Genes with RAD21 at promotors \n in differential Loop Anchors")+
+theme_classic()+
+theme(legend.position = "bottom",
+        axis.title = element_text(size = rel(2)),
+        axis.text = element_text(size = rel(2)),
+        legend.text = element_text(size = rel(1)),
+        legend.title = element_text(size = rel(1.2)),
+      )
+ggsave(p2,file=file.path(WORKDIR,"HiC/figures/EPTSScorr/RAD21FCvsLoopFC",paste0(MUT,".RAD21ofTSSvsLoopLogf.sig.EPanchorloops.pdf")),height=5,width=7)
+
+#add labels for genes
+sigGEX2<-test[test$sigcatcomb=="sigsig",]
+p2lab<-p2+geom_text_repel(aes(x = Loop_FC, y = RAD21_FC), data = sigGEX2, label = sigGEX2$TSSname,cex=2,max.overlaps=100,min.segment.length = 0 ,segment.size=0.1,box.padding= 1)
+ggsave(p2lab,file=file.path(WORKDIR,"HiC/figures/EPTSScorr/RAD21FCvsLoopFC",paste0(MUT,".RAD21ofTSSvsLoopLogf.sig.EPanchorloops.genelab.pdf")),height=5,width=7)
+
+sigGEX3<-test[(test$sigcatcomb=="sigsig"|test$sigcatcomb=="signs"),]
+p2lab<-p2+geom_text_repel(aes(x = Loop_FC, y = RAD21_FC), data = sigGEX3, label = sigGEX3$TSSname,cex=2,max.overlaps=100,min.segment.length = 0 ,segment.size=0.1,box.padding= 1)
+ggsave(p2lab,file=file.path(WORKDIR,"HiC/figures/EPTSScorr/RAD21FCvsLoopFC",paste0(MUT,".RAD21ofTSSvsLoopLogf.sig.EPanchorloops.allsig.genelab.pdf")),height=5,width=7)
+}
+```
+
+
+## add Foldchange of H3K27ac at TSS in anchors 
+```{r}
+#TSS-H3K27ac
+TSSH3K27ac<-read.table(file.path(diffpeakdirH3K,"TSSOverlap","All.CoAML.H3K27ac.peaks.TSS.bed"),sep="\t",header=FALSE)
+#qstat with all H3K27ac peaks in AML
+H3K27acqs<-list()
+H3K27acqs[["SA2mut"]]<-read.table(file.path(diffpeakdirH3K,"qstat.SA2mutvsCTRL.upperQ0.95.cqn.txt"),sep="\t",header=TRUE)
+H3K27acqs[["RAD21mut"]]<-read.table(file.path(diffpeakdirH3K,"qstat.RAD21mutvsCTRL.upperQ0.95.cqn.txt"),sep="\t",header=TRUE)
+
+
+
+#assign H3K27ac peaks to TSS loci entries
+for (MUT in MUTs) { 
+    for (FILT in Filts){
+df<-data.frame(loopstatsbedALL2[[paste0("TSS_Loop_RAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])
+df$H3K27ac_peakID<-NA
+#get all H3K peaks associated with TSS and add info to loop-GEX table
+TSSinH<-subset(TSSH3K27ac,TSSH3K27ac$V4 %in% df$TSSname)
+TSSinH_2<-subset(TSSinH,!(TSSinH$V4 %in% GEXlist[[MUT]][duplicated(GEXlist[[MUT]]$genes),"genes"]))
+TSSinH_2<-TSSinH_2[!(TSSinH_2$V10=="."),]
+for (TSS in TSSinH_2[,"V4"]){
+H3Kpeaks<-TSSinH_2[TSSinH_2$V4==TSS,"V10"]  
+df[df$TSSname==TSS,"H3K27ac_peakID"]<-paste(unique(H3Kpeaks),collapse=",")
+}
+df2<-data.frame(tidyr::separate_rows(df,H3K27ac_peakID,sep=",",convert=FALSE)) #separate in case of multiple H3K peaks in TSS
+df2<-df2[!(is.na(df2$TSSname)),]
+
+#add H3K27ac statistics
+df2$H3K27ac_FC<-0
+df2$H3K27ac_Padj<-1
+H3Ks<-unique(df2[!(is.na(df2$H3K27ac_peakID)),"H3K27ac_peakID"])
+
+H3Ks<-H3Ks[H3Ks %in% H3K27acqs[[MUT]][,"X"]]
+for (H3KID in H3Ks){
+df2[(df2$H3K27ac_peakID==H3KID & !(is.na(df2$H3K27ac_peakID))),"H3K27ac_FC"]<-H3K27acqs[[MUT]][H3K27acqs[[MUT]]$X==H3KID,"logFC"]
+df2[(df2$H3K27ac_peakID==H3KID & !(is.na(df2$H3K27ac_peakID))),"H3K27ac_Padj"]<-H3K27acqs[[MUT]][H3K27acqs[[MUT]]$X==H3KID,"FDR"]
+}
+df2[,"GEX_FC"] <- sapply(df2[,"GEX_FC"], as.numeric)
+df2[,"Loop_FC"] <- sapply(df2[,"Loop_FC"], as.numeric)
+df2[,"RAD21_FC"] <- sapply(df2[,"RAD21_FC"], as.numeric)
+df2[,"H3K27ac_FC"] <- sapply(df2[,"H3K27ac_FC"], as.numeric)
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-df2
+}}
+for (MUT in MUTs) { 
+df<-rbind(loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_combinationstats_CohesinAssEnhancers_DiffAnchors_up.FC1_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_combinationstats_CohesinAssEnhancers_DiffAnchors_down.FC1_",MUT)]])
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]<-df
+}
+#check correlations
+#1vs1 corr.
+corlist1<-list()
+for (MUT in MUTs) { 
+df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+corlist1[[paste0(MUT,"cor")]]<-cor(df[,c("RAD21_FC","H3K27ac_FC","GEX_FC","Loop_FC")], use="complete.obs",method='spearman')
+#multivariate corr:  Adjusted R2 is a corrected goodness-of-fit (model accuracy) measure for linear models. It identifies the percentage of variance in the target field that is explained by the input or inputs.
+corlist1[[paste0(MUT,"fit")]]<-lm(formula = GEX_FC ~ RAD21_FC + H3K27ac_FC + Loop_FC, data = df)
+}
+summary(corlist1[[paste0("SA2mut","fit")]]) #Multiple R-squared:  0.3169,    Adjusted R-squared:  0.3155   #p-value: < 2.2e-16
+summary(corlist1[[paste0("RAD21mut","fit")]]) #Multiple R-squared:  0.3799,    Adjusted R-squared:  0.3782  #p-value: < 2.2e-1
+```
+
+## add ATACseq peak FC based on annotation of ATACseq data to all RAD21 peaks -> only one ATAC-FC per RAD21peak
+```{r}
+#get ATAC at RAD21 peaks scoring results
+ATACatRAD21<-list()
+ATACatRAD21[["SA2mut"]]<-read.table(file.path(ATACdir,"diffPeaks/qstat.ATAC.SA2mutvsCTRL.strRAD21peak.ann.txt"),sep="\t",header=TRUE)
+ATACatRAD21[["RAD21mut"]]<-read.table(file.path(ATACdir,"diffPeaks/qstat.ATAC.RAD21mutvsCTRL.strRAD21peak.ann.txt"),sep="\t",header=TRUE)
+
+#Assign ATAC peaks to RAD21 in Diffanchors
+for (MUT in MUTs) { 
+    for (FILT in Filts){
+df<-data.frame(loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])
+df$ATAC_FC<-0
+df$ATAC_Padj<-1
+for (RAD in df$RAD21_peakID){
+df[(df$RAD21_peakID==RAD & !(is.na(df$RAD21_peakID))),"ATAC_FC"]<-ATACatRAD21[[MUT]][RAD,"logFC"]
+df[(df$RAD21_peakID==RAD & !(is.na(df$RAD21_peakID))),"ATAC_Padj"]<-ATACatRAD21[[MUT]][RAD,"FDR"]
+}
+df[is.na(df$H3K27ac_peakID),"H3K27ac_FC"]<-0
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-df
+}}
+
+for (MUT in MUTs) { 
+df<-rbind(loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_up.FC1_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_down.FC1_",MUT)]])
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]<-df
+}
+```
+
+## add:  SA1vsSA2 preference of RAD21 site in CTRL-AML (logFC in CTRL AMLs) based on str. RAD21 peaks
+```{r}
+#edgeR results in CTRL AMLS: SA1 VS SA2 ast stringent RAD21 peaks
+SA1vsSA2_CTRLAML<-read.table(file.path(diffpeakdirSA1vsSA2,"qstat.CTRL.AML.topQC.SA1vsSA2.strRAD21peak.ann.txt"),sep="\t",header=TRUE)
+
+
+##match them to the RAD21 peak ID!
+for (MUT in MUTs) { 
+    for (FILT in Filts){
+df<-data.frame(loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])
+
+#get all peaks associated with TSS and add info to loop-GEX table
+
+for (RAD in df$RAD21_peakID){
+df[df$RAD21_peakID==RAD,"SA1vsSA2_CTRL_AML_FC"]<-SA1vsSA2_CTRLAML[RAD,"logFC"]
+df[df$RAD21_peakID==RAD,"SA1vsSA2_CTRL_AML_Padj"]<-SA1vsSA2_CTRLAML[RAD,"FDR"]
+}
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-df
+}}
+
+for (MUT in MUTs) { 
+df<-rbind(loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_up.FC1_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_down.FC1_",MUT)]])
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]<-df
+}
+```
+
+
+
+### include CTCF presence
+###intersect wiht RAD21 -> RAD21 ass. CTCF assign basemena CTCF-logcpm as a measure <- no CTCF overlap would be 0
+####to have it on a similar numerical scale as the FCs: scale average CTCF-logcpm -2 (=0 i.e. no CTCF at all) to 2 (=max cpm)
+
+```{r}
+#CTCFs at RAD21 (stringent peak sets)
+CTCF_inters<-read.table(file.path(peakdir,"Allpat_mergePeaks_str.RAD21.filtered.peaks.str.CTCF.2wayOverlap.bed"))
+# results CTCF
+CTCF_scored_SA2mut<-read.table(file.path(diffpeakdir,"SA2mutvsCTRL.CTCF.stringent.Peaks_DESEQ.model.all.txt"),header=TRUE,row.names=1)
+summary(df$RAD21_peakID %in% CTCF_inters$V4)
+CTCF_scored<-list()
+CTCF_scored[["SA2mut"]]<-read.table(file.path(diffpeakdir,"SA2mutvsCTRL.CTCF.stringent.Peaks_DESEQ.model.all.txt"),header=TRUE,row.names=1)
+CTCF_scored[["RAD21mut"]]<-read.table(file.path(diffpeakdir,"RAD21mutvsCTRL.CTCF.stringent.Peaks_DESEQ.model.all.txt"),header=TRUE,row.names=1)
+
+for (MUT in MUTs) { 
+    for (FILT in Filts){
+df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+df$CTCF_peakID<-NA
+#assign all CTCFs
+for (RADID in df$RAD21_peakID){
+CTCFs<-unique(CTCF_inters[CTCF_inters$V4==RADID,"V10"])
+df[df$RAD21_peakID==RADID,"CTCF_peakID"]<-paste(CTCFs,collapse=",")
+}
+#split if multiple CTCFs (##only generates 3 extra loci)
+df2<-tidyr::separate_rows(df,CTCF_peakID,sep=",",convert=FALSE)
+
+#add CTCF stats
+df2$CTCF_FC<-0
+df2$CTCF_Padj<-1
+df2$CTCF_baseMean<-0
+df2<-data.frame(df2)
+for (CTCF in df2[df2$CTCF_peakID!=".","CTCF_peakID"]){
+df2[df2$CTCF_peakID==CTCF,"CTCF_FC"]<-CTCF_scored[[MUT]][CTCF,"log2FoldChange"]
+df2[df2$CTCF_peakID==CTCF,"CTCF_Padj"]<-CTCF_scored[[MUT]][CTCF,"padj"]
+df2[df2$CTCF_peakID==CTCF,"CTCF_baseMean"]<-CTCF_scored[[MUT]][CTCF,"baseMean"]
+}
+#scale the baseMean so 0 represents the lowest value
+df2[is.na(df2$CTCF_baseMean),"CTCF_baseMean"]<-0
+df2[is.na(df2$CTCF_FC),"CTCF_FC"]<-0
+df2$CTCF_score<-scale(df2$CTCF_baseMean)
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-df2
+}
+}
+for (MUT in MUTs) { 
+df<-rbind(loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_up.FC1_",MUT)]],loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_down.FC1_",MUT)]])
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]<-df
+}
+```
+
+# correlations GEX - epigenetics
+```{r}
+corrlist4<-list()
+for (MUT in MUTs) {
+df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+##using the CTCF score
+corrlist4[[paste0("cor4a",MUT)]]<-cor(df[,c("RAD21_FC","H3K27ac_FC","GEX_FC","Loop_FC","SA1vsSA2_CTRL_AML_FC","ATAC_FC","CTCF_score")], use="complete.obs",method='spearman')
+##using the CTCF logFC
+corrlist4[[paste0("cor4b",MUT)]]<-cor(df[,c("RAD21_FC","H3K27ac_FC","GEX_FC","Loop_FC","SA1vsSA2_CTRL_AML_FC","ATAC_FC","CTCF_FC")], use="complete.obs",method='spearman')
+#correlation plot
+pdf(file=file.path(WORKDIR,"HiC/figures/EPTSScorr/Corrplots",paste0(MUT,".corrplot.TSS_Loop_RAD_H3K_STAGprefAMLorHSPCs_ATACatRAD.logFC.CTCFscore.Spearman.pdf")),height=5,width=7)
+corrplot(corrlist4[[paste0("cor4a",MUT)]],cl.lim=c(-0.3,1),col=colorRampPalette(c("blue","white","red"))(200))
+dev.off()
+pdf(file=file.path(WORKDIR,"HiC/figures/EPTSScorr/Corrplots",paste0(MUT,".corrplot.TSS_Loop_RAD_H3K_STAGprefAML_ATACatRAD.CTCF.logFC.Spearman.pdf")),height=5,width=7)
+corrplot(corrlist4[[paste0("cor4b",MUT)]],cl.lim=c(-0.3,1),col=colorRampPalette(c("blue","white","red"))(200))
+dev.off()
+corrlist4[[paste0("fit4a",MUT)]]<-lm(formula = GEX_FC ~ RAD21_FC + H3K27ac_FC + Loop_FC + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_score, data = df) 
+corrlist4[[paste0("fit4b",MUT)]]<-lm(formula = GEX_FC ~ RAD21_FC + H3K27ac_FC + Loop_FC + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_FC, data = df) 
+corrlist4[[paste0("fit4ab",MUT)]]<-lm(formula = GEX_FC ~ RAD21_FC + H3K27ac_FC + Loop_FC + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_FC + CTCF_score, data = df)
+}
+#multivariate analysis
+summary(corrlist4[[paste0("fit4a","SA2mut")]]) #Multiple R-squared:  0.3344,    Adjusted R-squared:  0.3318  # p-value: < 2.2e-16
+summary(corrlist4[[paste0("fit4b","SA2mut")]]) #Multiple R-squared:  0.3324,    Adjusted R-squared:  0.3298  # p-value: < 2.2e-16
+summary(corrlist4[[paste0("fit4ab","SA2mut")]]) #Multiple R-squared:  0.3351,    Adjusted R-squared:  0.332  # p-value: < 2.2e-16 
+
+summary(corrlist4[[paste0("fit4a","RAD21mut")]]) #Multiple R-squared:  0.3821,    Adjusted R-squared:  0.3785   # p-value: < 2.2e-16 
+summary(corrlist4[[paste0("fit4b","RAD21mut")]]) #Multiple R-squared:  0.3906,    Adjusted R-squared:  0.3871   # p-value: < 2.2e-16
+summary(corrlist4[[paste0("fit4ab","RAD21mut")]]) #Multiple R-squared:  0.3906,    Adjusted R-squared:  0.3865  # p-value: < 2.2e-16
+
+#correlations Looping - epigenetics + GEX
+for (MUT in MUTs) {
+  df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+corrlist4[[paste0("fit_loop_other",MUT)]]<-lm(formula = Loop_FC ~ RAD21_FC + H3K27ac_FC + GEX_FC + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_score, data = df)
+corrlist4[[paste0("fit_RAD21_other",MUT)]]<-lm(formula = RAD21_FC ~ Loop_FC + H3K27ac_FC + GEX_FC + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_score, data = df)
+}
+
+summary(corrlist4[[paste0("fit_loop_other","SA2mut")]]) #Multiple R-squared:  0.06786,   Adjusted R-squared:  0.06422  #p-value: < 2.2e-16
+summary(corrlist4[[paste0("fit_RAD21_other","SA2mut")]]) #Multiple R-squared:  0.2319,    Adjusted R-squared:  0.2289  #p-value: < 2.2e-16
+
+```
+
+
+# Also add loop size to correlation
+```{r}
+for (MUT in MUTs) {
+loopcoords<-Loopdifflist[[MUT]]
+loopcoords$Loopsize<-Loopdifflist[[MUT]]$end2-Loopdifflist[[MUT]]$start1
+df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+
+for (loop in df$Loopname){
+df[df$Loopname==loop,"Loopsize"]<-loopcoords[loopcoords$Row.names==loop,"Loopsize"]
+}
+df$LoopsizeZscore<-scale(df$Loopsize)
+loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_loopsize_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]<-df
+}
+
+
+
+#correlations Looping - epigenetics + GEX
+corrlist5<-list()
+for (MUT in MUTs) {
+  df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_loopsize_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+corrlist5[[paste0("fit_1",MUT)]]<-lm(formula = GEX_FC ~ RAD21_FC + H3K27ac_FC + Loop_FC + Loopsize + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_score, data = df) 
+corrlist5[[paste0("fit_2",MUT)]]<-lm(formula = GEX_FC ~ RAD21_FC + H3K27ac_FC + Loop_FC + LoopsizeZscore + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_score, data = df) 
+}
+
+summary(corrlist5[[paste0("fit_1","SA2mut")]]) #Multiple R-squared:  0.3478,    Adjusted R-squared:  0.3448   #p-value: < 2.2e-16
+summary(corrlist5[[paste0("fit_2","SA2mut")]]) #Multiple R-squared:  0.3478,    Adjusted R-squared:  0.3448   #p-value: < 2.2e-16
+summary(corrlist5[[paste0("fit_1","RAD21mut")]]) #Multiple R-squared:  0.3899,    Adjusted R-squared:  0.3859
+
+for (MUT in MUTs) {
+  df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_loopsize_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+corrlist5[[paste0("fit_looping",MUT)]]<-lm(formula = Loop_FC ~ RAD21_FC + H3K27ac_FC + GEX_FC + Loopsize + SA1vsSA2_CTRL_AML_FC + ATAC_FC + CTCF_score, data = df) 
+}
+summary(corrlist5[[paste0("fit_looping","SA2mut")]]) #Multiple R-squared:  0.2225,    Adjusted R-squared:  0.2189 Multiple R-squared:  0.2225,    Adjusted R-squared:  0.2189 
+summary(corrlist5[[paste0("fit_looping","RAD21mut")]]) #Multiple R-squared:  0.2788,    Adjusted R-squared:  0.274 #p-value: < 2.2e-16
+
+
+##plot using the Loop size abs.
+for (MUT in MUTs) {
+df<-loopstatsbedALL2[[paste0("TSS_Loop_RAD_H3K_STAGv2_ATACatRAD_CTCF_loopsize_combinationstats_CohesinAssEnhancers_DiffAnchors_",MUT)]]
+corrlist5[[paste0("cor",MUT)]]<-cor(df[,c("RAD21_FC","H3K27ac_FC","GEX_FC","Loop_FC","Loopsize","SA1vsSA2_CTRL_AML_FC","ATAC_FC","CTCF_FC")], use="complete.obs",method='spearman')
+corrlist5[[paste0("corZ",MUT)]]<-cor(df[,c("RAD21_FC","H3K27ac_FC","GEX_FC","Loop_FC","LoopsizeZscore","SA1vsSA2_CTRL_AML_FC","ATAC_FC","CTCF_FC")], use="complete.obs",method='spearman')
+}
+
+for (MUT in MUTs) {
+write.table(corrlist5[[paste0("cor",MUT)]],file=file.path(WORKDIR,"HiC/figures/EPTSScorr/Corrplots",paste0(MUT,".TSS_Loop_RAD_H3K_STAGprefAMLorHSPCs_ATACatRAD.logFC.CTCFscore.loopsize.Spearman.txt")),sep="\t",quote=F)
+}
+
+#correlation plot
+for (MUT in MUTs) {
+pdf(file=file.path(WORKDIR,"HiC/figures/EPTSScorr/Corrplots",paste0(MUT,".corrplot.TSS_Loop_RAD_H3K_STAGprefAMLorHSPCs_ATACatRAD.logFC.CTCFscore.loopsize.Spearman.pdf")),height=5,width=7)
+corrplot(corrlist5[[paste0("cor",MUT)]],cl.lim=c(-0.3,1),col=colorRampPalette(c("blue","white","red"))(200))
+dev.off()
+}
+
+```
+

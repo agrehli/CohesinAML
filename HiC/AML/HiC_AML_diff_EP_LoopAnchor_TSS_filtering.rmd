@@ -1,0 +1,1004 @@
+---
+title: "Filtering of differential loop Anchors in Cohesin mut AML by TSS presence"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html
+---
+
+# Loading libraries and set directories
+```{r}
+# libraries
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(corrplot)
+library(cowplot)
+# paths
+DIR_DATA="/misc/data"
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML")
+
+CHIPDIR<-file.path(WORKDIR,"ChIP_analysis")
+peakdir<-file.path(CHIPDIR,"peaks")
+diffpeakdir<-file.path(CHIPDIR,"diffPeaks")
+diffpeakdirH3K<-file.path(WORKDIR,"ChIP_analysis/H3K27ac/diffPeaks")
+diffpeakdirSA1vsSA2<-file.path(diffpeakdir,"SA1vsSA2")
+GEXdir<-file.path(WORKDIR,"RNAseq/Analysis/Resulttables/RNAseq_Cohesin_AML_AF3")
+ATACdir<-file.path(WORKDIR,"ATAC")
+
+LOOPDIR=file.path(WORKDIR,"HiC/loops")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+AllEorEP=file.path(diffanchorsn2t,"H3K27overlap")
+AnchorsOverlapPairs<-file.path(diffanchorsn2t,"AnchorsOverlapPairs")
+TSSOverlap<-file.path(AnchorsOverlapPairs,"TSSoverlap")
+DTmatrixdir<-file.path(WORKDIR,"HiC/figures/Heatmaps/DeeptoolsMatrices/n2tresults/PairedAnch")
+
+# variables
+MUTs<-c("SA2mut","RAD21mut")
+Filts<-c("up.FC1", "down.FC1")
+strands<-c("plus","minus")
+```
+
+# read in bed files
+```{r}
+#read peaks in anchors within H3K27ac centered on RAD21 peaks plus loop anchorID and coords
+loopstatsbed<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (strand in strands){
+path<-file.path(TSSOverlap,paste0("H3K27acOverlap_",FILT,"_anchors_",MUT,"_paired_",strand,".TSS.2wayoverlap.bed"))
+loopstatsbed[[paste0("DiffAnchors_",FILT,"_",MUT,"_TSS_",strand)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbed[[paste0("DiffAnchors_",FILT,"_",MUT,"_TSS_",strand)]]<-loopstatsbed[[paste0("DiffAnchors_",FILT,"_",MUT,"_TSS_",strand)]][,c(1:4,6:10,13)]
+colnames(loopstatsbed[[paste0("DiffAnchors_",FILT,"_",MUT,"_TSS_",strand)]])<-c("Anchorchr","Anchorstart","Anchorend","LoopID","Anchorstrand","TSSchr","TSSstart","TSSend","TSSname","AnchorTSSoverlap") #rename columns
+}}}
+
+
+#also get the "unpaired" H3K27ac anchors where only one side has H3K27ac
+loopstatsbedUnpaired<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (strand in strands){
+path1<-file.path(TSSOverlap,paste0("H3K27acOverlap_",FILT,"_anchors_",MUT,"_unpairedPLUS_",strand,".TSS.2wayoverlap.bed"))#PLUS side has the H3K
+loopstatsbedUnpaired[[paste0("DiffAnchors_unpaired_",FILT,"_",MUT,"_TSS_PLUS_",strand)]]<-read.table(path1, header=F, sep="\t")
+colnames(loopstatsbedUnpaired[[paste0("DiffAnchors_unpaired_",FILT,"_",MUT,"_TSS_PLUS_",strand)]])<-c("Anchorchr","Anchorstart","Anchorend","LoopID","Anchorstrand","NA","TSSchr","TSSstart","TSSend","TSSname","AnchorTSSoverlap")
+
+path2<-file.path(TSSOverlap,paste0("H3K27acOverlap_",FILT,"_anchors_",MUT,"_unpairedMINUS_",strand,".TSS.2wayoverlap.bed"))
+loopstatsbedUnpaired[[paste0("DiffAnchors_unpaired_",FILT,"_",MUT,"_TSS_MINUS_",strand)]]<-read.table(path2, header=F, sep="\t")
+colnames(loopstatsbedUnpaired[[paste0("DiffAnchors_unpaired_",FILT,"_",MUT,"_TSS_MINUS_",strand)]])<-c("Anchorchr","Anchorstart","Anchorend","LoopID","Anchorstrand","NA","TSSchr","TSSstart","TSSend","TSSname","AnchorTSSoverlap")
+}}}
+
+```
+
+
+# Assigning individual anchors as Enhancer/Promoter/Structural anchor
+## for the paired anchors where both sides have H3K27ac
+```{r}
+##get GEX data and filter ## additionally filter TSS for active genes by average gene expression CPM>1 (RNAseq)
+qstatSA2mut<-read.table(file.path(GEXdir,"STAG2pat_vs_CTRL/qstat_STAG2vs.CTRL.glm.txt"), header=T, sep="\t")
+qstatRAD21mut<-read.table(file.path(GEXdir,"RAD21pat_vs_CTRL/qstat_RAD21vs.CTRL.glm.txt"), header=T, sep="\t")
+GEXlist<-list(qstatSA2mut,qstatRAD21mut)
+names(GEXlist)<-c("SA2mut","RAD21mut")
+GEXlistfilt<-lapply(GEXlist,function(x) subset(x,logCPM>0.565))
+
+# filter for loopID and then summarize unique TSS,  split by TSS (promoter) and non-TSS anchors (enhancer)
+# filter paired anchors by TSS status and assign as either enhancer or promoter
+AnchorTSS_CPM1_list<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (strand in strands){
+df<-loopstatsbed[[paste0("DiffAnchors_",FILT,"_",MUT,"_TSS_",strand)]]
+Looplist<-list()
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllTSS<-subset(df,df$LoopID == Loop) #all entries for the anchor of this loopID
+ExpressedTSS<-subset(Loop_AllTSS,Loop_AllTSS$TSSname %in% GEXlistfilt[[MUT]]$genes)
+ExpressedTSSinloop<-paste(unique(ExpressedTSS$TSSname),collapse=",") #paste all TSS in this anchor into on string
+Loop_allTSSin1<-Loop_AllTSS[1,1:5] #get only the first entry to represnet the loop
+Loop_allTSSin1$TSS <- ExpressedTSSinloop #add the TSS string to preserve all associated TSS
+Looplist[[Loop]]<-Loop_allTSSin1 #save in list
+}
+LoopTSSdf<-do.call(rbind.data.frame, Looplist) #get a df from the list
+LoopTSSdf$EPstatus<-"Promoter" #assign status promoter
+LoopTSSdf[(LoopTSSdf$TSS==""),"EPstatus"]<-"Enhancer" #assign status enhancer if no TSS
+AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"_TSS_",strand)]]<-LoopTSSdf
+}}}
+```
+
+## for the "unpaired" anchors where only one side has H3K27ac: 
+```{r}
+mainstrands<-c("PLUS_plus","MINUS_minus")
+partnerstrands<-c("PLUS_minus","MINUS_plus")
+
+#filter by TSS status and assign as  enhancer or promoter or structural
+AnchorTSS_CPM1_listUNP<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+          for (strand in mainstrands){
+df<-loopstatsbedUnpaired[[paste0("DiffAnchors_unpaired_",FILT,"_",MUT,"_TSS_",strand)]]
+Looplist<-list()
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllTSS<-subset(df,df$LoopID == Loop) #all entries for the anchor of this loopID
+ExpressedTSS<-subset(Loop_AllTSS,Loop_AllTSS$TSSname %in% GEXlistfilt[[MUT]]$genes)
+ExpressedTSSinloop<-paste(unique(ExpressedTSS$TSSname),collapse=",") #paste all TSS in this anchor into on string
+Loop_allTSSin1<-Loop_AllTSS[1,1:5] #get only the first entry to represnet the loop
+Loop_allTSSin1$TSS <- ExpressedTSSinloop #add the TSS string to preserve all associated TSS
+Looplist[[Loop]]<-Loop_allTSSin1 #save in list
+}
+LoopTSSdf<-do.call(rbind.data.frame, Looplist) #get a df from the list
+LoopTSSdf$EPstatus<-"Promoter" #assign status promoter
+LoopTSSdf[(LoopTSSdf$TSS=="."),"EPstatus"]<-"Enhancer" #assign status enhancer if no TSS
+LoopTSSdf[(LoopTSSdf$TSS==""),"EPstatus"]<-"Enhancer" #assign status enhancer if no TSS
+AnchorTSS_CPM1_listUNP[[paste0(FILT,"_",MUT,"_TSS_",strand)]]<-LoopTSSdf
+}
+#same for the structural partner strands without H3K27ac         
+          for (strand in partnerstrands){
+df<-loopstatsbedUnpaired[[paste0("DiffAnchors_unpaired_",FILT,"_",MUT,"_TSS_",strand)]]
+Looplist<-list()
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllTSS<-subset(df,df$LoopID == Loop) #all entries for the anchor of this loopID
+ExpressedTSS<-subset(Loop_AllTSS,Loop_AllTSS$TSSname %in% GEXlistfilt[[MUT]]$genes)
+ExpressedTSSinloop<-paste(unique(ExpressedTSS$TSSname),collapse=",") #paste all TSS in this anchor into on string
+Loop_allTSSin1<-Loop_AllTSS[1,1:5] #get only the first entry to represnet the loop
+Loop_allTSSin1$TSS <- ExpressedTSSinloop #add the TSS string to preserve all associated TSS
+Looplist[[Loop]]<-Loop_allTSSin1 #save in list
+}
+LoopTSSdf<-do.call(rbind.data.frame, Looplist) #get a df from the list
+LoopTSSdf$EPstatus<-"structuralPromoter" #assign status promoter
+LoopTSSdf[(LoopTSSdf$TSS=="."),"EPstatus"]<-"structural"
+LoopTSSdf[(LoopTSSdf$TSS==""),"EPstatus"]<-"structural"
+AnchorTSS_CPM1_listUNP[[paste0(FILT,"_",MUT,"_TSS_",strand)]]<-LoopTSSdf
+}
+}}
+```
+
+# Annotate all set of two connected anchors by Enhancer/Promoter/Structural status
+## define anchor pairs as: e-p p-p e-e (for the paired anchors)
+```{r}
+AnchorTSS_CPM1_list_Comb<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+df1<-AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"_TSS_plus")]]
+df2<-AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"_TSS_minus")]]
+#bring to same order
+df2o<-df2[match(df1$LoopID, df2$LoopID),]
+#merge plus and minus sides
+plus_minus_pairs<-cbind(df1,df2o)
+colnames(plus_minus_pairs)<-c(paste0(colnames(df1),"_plus"),paste0(colnames(df2o),"_minus"))
+
+#assign EP combination status
+plus_minus_pairs$looptype<-"NA"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="Enhancer" & plus_minus_pairs$EPstatus_plus=="Promoter")|
+(plus_minus_pairs$EPstatus_minus=="Promoter" & plus_minus_pairs$EPstatus_plus=="Enhancer"),"looptype"]<-"EP"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="Enhancer" & plus_minus_pairs$EPstatus_plus=="Enhancer"),"looptype"]<-"EE"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="Promoter" & plus_minus_pairs$EPstatus_plus=="Promoter"),"looptype"]<-"PP"
+AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]]<-plus_minus_pairs
+}}
+
+#use the table function on the looptype column
+lt<-lapply(AnchorTSS_CPM1_list_Comb,function(x) table(x[,"looptype"]))
+lt2<-lapply(lt,function(x) as.data.frame(x))
+ltdf2<-do.call(rbind.data.frame, lt2)
+colnames(ltdf2)<-c("LoopType","Freq")
+ltdf2$group<-factor(c(rep("SA2mut",6),rep("RAD21mut",6)),levels=c("SA2mut","RAD21mut"))
+ltdf2$change<-c(rep("strengthened",3),rep("weakened",3),rep("strengthened",3),rep("weakened",3))
+
+####no major change of EP, but EE increase and PP decrease
+#visualize as barplot
+
+p<-ggplot(ltdf2, aes(change, Freq,fill=LoopType)) +
+  geom_bar(position = "stack", stat="identity") +
+    xlab("") + ylab("number of loops") +
+    ggtitle("Paired H3K27ac-anchor loop type summary") +
+ theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 20, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) + ylim(0,310)+
+ guides(fill=guide_legend(title=""))+
+ facet_wrap(~ group)
+ggsave(p,file=file.path(WORKDIR,"HiC","figures","Loopstats","Diff.Paired_EP_looptypes.CPM1.pdf"))
+```
+
+## define anchor pairs as: e-S p-S pairs (S=structural) (for the unpaired anchors)
+```{r}
+## get e-S p-S pairs (S=structural)
+mains<-c("PLUS","MINUS")
+AnchorTSS_CPM1_list_CombUNP<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (main in mains){
+df1<-AnchorTSS_CPM1_listUNP[[paste0(FILT,"_",MUT,"_TSS_",main,"_plus")]]
+df2<-AnchorTSS_CPM1_listUNP[[paste0(FILT,"_",MUT,"_TSS_",main,"_minus")]]
+#bring to same order
+df2o<-df2[match(df1$LoopID, df2$LoopID),]
+#merge plus and minus sides
+plus_minus_pairs<-cbind(df1,df2o)
+colnames(plus_minus_pairs)<-c(paste0(colnames(df1),"_plus"),paste0(colnames(df2o),"_minus"))
+
+#assign EP combination status
+plus_minus_pairs$looptype<-"NA"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="structural" & plus_minus_pairs$EPstatus_plus=="Promoter")|
+(plus_minus_pairs$EPstatus_minus=="Promoter" & plus_minus_pairs$EPstatus_plus=="structural"),"looptype"]<-"PS"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="structural" & plus_minus_pairs$EPstatus_plus=="Enhancer")|
+(plus_minus_pairs$EPstatus_minus=="Enhancer" & plus_minus_pairs$EPstatus_plus=="structural"),"looptype"]<-"ES"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="structuralPromoter" & plus_minus_pairs$EPstatus_plus=="Enhancer")|
+(plus_minus_pairs$EPstatus_minus=="Enhancer" & plus_minus_pairs$EPstatus_plus=="structuralPromoter"),"looptype"]<-"EsP"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="structuralPromoter" & plus_minus_pairs$EPstatus_plus=="Promoter")|
+(plus_minus_pairs$EPstatus_minus=="Promoter" & plus_minus_pairs$EPstatus_plus=="structuralPromoter"),"looptype"]<-"PsP"
+plus_minus_pairs[(plus_minus_pairs$EPstatus_minus=="structuralPromoter" & plus_minus_pairs$EPstatus_plus=="structuralPromoter"),"looptype"]<-"sPsP"
+AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_",main)]]<-plus_minus_pairs
+}}}
+
+#use the table function on the looptype column
+lt<-lapply(AnchorTSS_CPM1_list_CombUNP,function(x) table(x[,"looptype"]))
+lt2<-lapply(lt,function(x) as.data.frame(x))
+ltdf3<-do.call(rbind.data.frame, lt2)
+colnames(ltdf3)<-c("LoopType","Freq")
+ltdf3$group<-factor(c(rep("SA2mut",16),rep("RAD21mut",16)),levels=c("SA2mut","RAD21mut"))
+ltdf3$change<-c(rep("strengthened",8),rep("weakened",8),rep("strengthened",8),rep("weakened",8))
+
+#visualize as barplot
+p<-ggplot(ltdf3, aes(change, Freq,fill=LoopType)) +
+  geom_bar(position = "stack", stat="identity") +
+    xlab("") + ylab("number of loops") +
+    ggtitle("Unpaired H3K27ac-anchor loop type summary") +
+ theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 20, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) + ylim(0,600)+
+ guides(fill=guide_legend(title=""))+
+ facet_wrap(~ group)
+ggsave(p,file=file.path(WORKDIR,"HiC","figures","Loopstats","Diff.Paired_regulatory-to-structural_looptypes.CPM1.pdf"))
+```
+
+
+# Summary statistics of regulatory-regulatory + structural-regulatory Interaction pair annotations
+```{r}
+ltdf4<-rbind(ltdf2,ltdf3)
+ltdf4$LoopType<-factor(ltdf4$LoopType,levels=c("EP","PP","EE","EsP","PsP","ES","PS"))
+p<-ggplot(ltdf4, aes(change, Freq,fill=LoopType)) +
+  geom_bar(position = "stack", stat="identity") +
+    xlab("") + ylab("number of loops") +
+    ggtitle("Differential loops \n with H3K27ac-marked anchor(s) ") +
+  scale_fill_manual(values = c("EP"="darkgoldenrod3","PP"="indianred1","EE"="gold2","EsP"="khaki","PsP"="lightpink","PS"="ivory3","ES"="ivory4"),
+  labels = c("Enhancer-Promoter","Promoter-Promoter","Enhancer-Enhancer","Enhancer-structural Promoter","Promoter-structural Promoter","Enhancer-Structural","Promoter-Structural"))+
+ theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 20, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) + ylim(0,1000)+
+ guides(fill=guide_legend(title=""))+
+ facet_wrap(~ group)
+ggsave(p,file=file.path(WORKDIR,"HiC","figures","Loopstats","Diff.Paired_reg-reg_reg-struct_looptypes.CPM1.pdf"))
+```
+
+
+
+# generate new pairs of bed files based on EP status (using the CPM1 filtered results)
+###these will be furhter used for downstream analyses
+```{r}
+for (MUT in MUTs) {
+  for (FILT in Filts){
+##EP loops split by Enhancer and Promoter
+EP<-subset(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],looptype=="EP")
+#get promoter coords
+MINUS_PROM<-subset(EP,EPstatus_minus=="Promoter")[,c(8:11)]
+colnames(MINUS_PROM)<-c("chr","start","stop","name")
+PLUS_PROM<-subset(EP,EPstatus_plus=="Promoter")[,c(1:4)]
+colnames(PLUS_PROM)<-c("chr","start","stop","name")
+PROM<-rbind(MINUS_PROM,PLUS_PROM)
+#get associated enhancer coords
+MINUS_ENH<-subset(EP,EPstatus_minus=="Enhancer")[,c(8:11)]
+colnames(MINUS_ENH)<-c("chr","start","stop","name")
+PLUS_ENH<-subset(EP,EPstatus_plus=="Enhancer")[,c(1:4)]
+colnames(PLUS_ENH)<-c("chr","start","stop","name")
+ENH<-rbind(MINUS_ENH,PLUS_ENH)
+ENH<-ENH[match(PROM$name, ENH$name),] #bring to same order as PROM
+#write as bedfiles
+write.table(PROM, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EP_anchors_",MUT,"_promoters.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(ENH, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EP_anchors_",MUT,"_enhancers.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}
+
+##EE loops split by plus and minus
+for (MUT in MUTs) {
+  for (FILT in Filts){
+EE<-subset(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],looptype=="EE")
+#get promoter coords
+MINUS_ENH<-subset(EE,EPstatus_minus=="Enhancer")[,c(8:11)]
+colnames(MINUS_ENH)<-c("chr","start","stop","name")
+PLUS_ENH<-subset(EE,EPstatus_plus=="Enhancer")[,c(1:4)]
+colnames(PLUS_ENH)<-c("chr","start","stop","name")
+MINUS_ENH<-MINUS_ENH[match(PLUS_ENH$name, MINUS_ENH$name),] #bring to same order as PLUS
+#write as bedfiles
+write.table(PLUS_ENH, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EE_anchors_",MUT,"_enhancers.plus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(MINUS_ENH, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EE_anchors_",MUT,"_enhancers.minus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}
+
+for (MUT in MUTs) {
+  for (FILT in Filts){
+PP<-subset(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],looptype=="PP")
+#get promoter coords
+MINUS_PROM<-subset(PP,EPstatus_minus=="Promoter")[,c(8:11)]
+colnames(MINUS_PROM)<-c("chr","start","stop","name")
+PLUS_PROM<-subset(PP,EPstatus_plus=="Promoter")[,c(1:4)]
+colnames(PLUS_PROM)<-c("chr","start","stop","name")
+MINUS_PROM<-MINUS_PROM[match(PLUS_PROM$name, MINUS_PROM$name),] #bring to same order as PLUS
+#write as bedfiles
+write.table(PLUS_PROM, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_PP_anchors_",MUT,"_promoters.plus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(MINUS_PROM, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_PP_anchors_",MUT,"_promoters.minus.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}
+
+
+#also write combined tables
+for (MUT in MUTs) {
+  for (FILT in Filts){
+PP<-subset(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],looptype=="PP")
+EP<-subset(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],looptype=="EP")
+EE<-subset(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],looptype=="EE")
+write.table(PP, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_PP_anchors.txt")),row.names=T,quote=F,sep="\t",col.names=T)
+write.table(EP, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EP_anchors.txt")),row.names=T,quote=F,sep="\t",col.names=T)
+write.table(EE, file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EE_anchors.txt")),row.names=T,quote=F,sep="\t",col.names=T)
+write.table(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]],file.path(TSSOverlap,paste0(MUT,"_",FILT,"paired_EP_PP_EE_anchors.txt")),row.names=T,quote=F,sep="\t",col.names=T)
+}}
+
+################################################################same for the unpaired H3K27ac loops
+dir.create(file.path(TSSOverlap,"reg_struc_pairs"))
+for (MUT in MUTs) {
+  for (FILT in Filts){
+##PS loops split by Promoter and structural anchor
+tmplist<-list()
+for (main in mains){
+PS<-subset(AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_",main)]],looptype=="PS")
+#get promoter coords
+MINUS_PROM<-subset(PS,EPstatus_minus=="Promoter")[,c(8:11)]
+colnames(MINUS_PROM)<-c("chr","start","stop","name")
+PLUS_PROM<-subset(PS,EPstatus_plus=="Promoter")[,c(1:4)]
+colnames(PLUS_PROM)<-c("chr","start","stop","name")
+tmplist[[paste0("PROM",main)]]<-rbind(MINUS_PROM,PLUS_PROM)
+#get associated structural anchor coords
+MINUS_STR<-subset(PS,EPstatus_minus=="structural")[,c(8:11)]
+colnames(MINUS_STR)<-c("chr","start","stop","name")
+PLUS_STR<-subset(PS,EPstatus_plus=="structural")[,c(1:4)]
+colnames(PLUS_STR)<-c("chr","start","stop","name")
+STR<-rbind(MINUS_STR,PLUS_STR)
+STR<-STR[match(tmplist[[paste0("PROM",main)]]$name, STR$name),] #bring to same order as PROM
+tmplist[[paste0("STR",main)]]<-STR
+}
+STRall<-rbind(tmplist[[paste0("STR","PLUS")]],tmplist[[paste0("STR","MINUS")]])
+PROMall<-rbind(tmplist[[paste0("PROM","PLUS")]],tmplist[[paste0("PROM","MINUS")]])
+#write as bedfiles
+write.table(PROMall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_PS_anchors_promoters.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(STRall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_PS_anchors_structural.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+
+##ES loops split by Promoter and structural anchor
+tmplist<-list()
+for (main in mains){
+ES<-subset(AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_",main)]],looptype=="ES")
+#get enhancer coords
+MINUS_ENH<-subset(ES,EPstatus_minus=="Enhancer")[,c(8:11)]
+colnames(MINUS_ENH)<-c("chr","start","stop","name")
+PLUS_ENH<-subset(ES,EPstatus_plus=="Enhancer")[,c(1:4)]
+colnames(PLUS_ENH)<-c("chr","start","stop","name")
+tmplist[[paste0("ENH",main)]]<-rbind(MINUS_ENH,PLUS_ENH)
+#get associated structural anchor coords
+MINUS_STR<-subset(ES,EPstatus_minus=="structural")[,c(8:11)]
+colnames(MINUS_STR)<-c("chr","start","stop","name")
+PLUS_STR<-subset(ES,EPstatus_plus=="structural")[,c(1:4)]
+colnames(PLUS_STR)<-c("chr","start","stop","name")
+STR<-rbind(MINUS_STR,PLUS_STR)
+STR<-STR[match(tmplist[[paste0("ENH",main)]]$name, STR$name),] #bring to same order as ENH
+tmplist[[paste0("STR",main)]]<-STR
+}
+STRall<-rbind(tmplist[[paste0("STR","PLUS")]],tmplist[[paste0("STR","MINUS")]])
+ENHall<-rbind(tmplist[[paste0("ENH","PLUS")]],tmplist[[paste0("ENH","MINUS")]])
+#write as bedfiles
+write.table(ENHall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_ES_anchors_enhancers.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(STRall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_ES_anchors_structural.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+
+
+##ESp loops split by Promoter and structural anchor
+tmplist<-list()
+for (main in mains){
+ES<-subset(AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_",main)]],looptype=="EsP")
+#get enhancer coords
+MINUS_ENH<-subset(ES,EPstatus_minus=="Enhancer")[,c(8:11)]
+colnames(MINUS_ENH)<-c("chr","start","stop","name")
+PLUS_ENH<-subset(ES,EPstatus_plus=="Enhancer")[,c(1:4)]
+colnames(PLUS_ENH)<-c("chr","start","stop","name")
+tmplist[[paste0("ENH",main)]]<-rbind(MINUS_ENH,PLUS_ENH)
+#get associated structural anchor coords
+MINUS_STR<-subset(ES,EPstatus_minus=="structuralPromoter")[,c(8:11)]
+colnames(MINUS_STR)<-c("chr","start","stop","name")
+PLUS_STR<-subset(ES,EPstatus_plus=="structuralPromoter")[,c(1:4)]
+colnames(PLUS_STR)<-c("chr","start","stop","name")
+STR<-rbind(MINUS_STR,PLUS_STR)
+STR<-STR[match(tmplist[[paste0("ENH",main)]]$name, STR$name),] #bring to same order as ENH
+tmplist[[paste0("STR",main)]]<-STR
+}
+STRall<-rbind(tmplist[[paste0("STR","PLUS")]],tmplist[[paste0("STR","MINUS")]])
+ENHall<-rbind(tmplist[[paste0("ENH","PLUS")]],tmplist[[paste0("ENH","MINUS")]])
+#write as bedfiles
+write.table(ENHall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_EsP_anchors_enhancers.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(STRall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_EsP_anchors_structuralPromoter.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+
+##PsP loops split by Promoter and structural anchor
+tmplist<-list()
+for (main in mains){
+PS<-subset(AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_",main)]],looptype=="PsP")
+#get promoter coords
+MINUS_PROM<-subset(PS,EPstatus_minus=="Promoter")[,c(8:11)]
+colnames(MINUS_PROM)<-c("chr","start","stop","name")
+PLUS_PROM<-subset(PS,EPstatus_plus=="Promoter")[,c(1:4)]
+colnames(PLUS_PROM)<-c("chr","start","stop","name")
+tmplist[[paste0("PROM",main)]]<-rbind(MINUS_PROM,PLUS_PROM)
+#get associated structural anchor coords
+MINUS_STR<-subset(PS,EPstatus_minus=="structuralPromoter")[,c(8:11)]
+colnames(MINUS_STR)<-c("chr","start","stop","name")
+PLUS_STR<-subset(PS,EPstatus_plus=="structuralPromoter")[,c(1:4)]
+colnames(PLUS_STR)<-c("chr","start","stop","name")
+STR<-rbind(MINUS_STR,PLUS_STR)
+STR<-STR[match(tmplist[[paste0("PROM",main)]]$name, STR$name),] #bring to same order as PROM
+tmplist[[paste0("STR",main)]]<-STR
+}
+STRall<-rbind(tmplist[[paste0("STR","PLUS")]],tmplist[[paste0("STR","MINUS")]])
+PROMall<-rbind(tmplist[[paste0("PROM","PLUS")]],tmplist[[paste0("PROM","MINUS")]])
+#write as bedfiles
+write.table(PROMall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_PsP_anchors_promoters.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(STRall, file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_PsP_anchors_structuralPromoter.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}
+###write combined table for PS ES etc as well:
+for (MUT in MUTs) {
+  for (FILT in Filts){
+comb<-rbind(AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_PLUS")]],AnchorTSS_CPM1_list_CombUNP[[paste0(FILT,"_",MUT,"_MINUS")]])
+write.table(comb,file.path(TSSOverlap,"reg_struc_pairs",paste0(MUT,"_",FILT,"paired_ES_PS_EsP_PsP_anchors.txt")),row.names=T,quote=F,sep="\t",col.names=T)
+}}
+################################################################
+
+```
+
+
+
+
+## get the top RAD21 peak for each Anchor to be used for centering in plots
+### could be either Top peak by average CPM or peak that overlaps the TSS of the promoter...
+```{r}
+#get RAD21 peak coverage
+diffpeaks<-read.table(file.path(diffpeakdir,"SA2mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"),header=TRUE,row.names=1)
+#get TSS RAD21 association
+TSSRAD21<-read.table(file.path(TSSOverlap,"RAD21centred","TSS.RAD21.2wayoverlap.bed"),header=F, sep="\t")
+TSSRAD21<-TSSRAD21[,c(1:4,7:10)]
+colnames(TSSRAD21)<-c("TSS_chr","TSS_start","TSS_end","TSS_name","RAD21_chr","RAD21_start","RAD21_end","RAD21_peakID")
+RAD21TSS<-read.table(file.path(TSSOverlap,"RAD21centred","TSS.RAD21.2wayoverlap.RAD.bed"),header=F, sep="\t")
+RAD21TSS<-RAD21TSS[,c(1:4,7:10)]
+colnames(RAD21TSS)<-c("RAD21_chr","RAD21_start","RAD21_end","RAD21_peakID","TSS_chr","TSS_start","TSS_end","TSS_name")
+
+
+#read in EP/EE/PP anchor H3K27ac-RAD21 overlap files
+
+types<-c("EP_anchors_enhancers","EP_anchors_promoters","PP_anchors_promoters.plus","PP_anchors_promoters.minus","EE_anchors_enhancers.plus","EE_anchors_enhancers.minus")
+RAD21anchoverllist<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+path<-file.path(TSSOverlap,"RAD21centred",paste0(MUT,"_",FILT,"_paired_",type,".RAD21.2wayoverlap.bed"))
+RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]]<-RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]][,c(1:4,5:8,11)]
+colnames(RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]])<-c("Anchorchr","Anchorstart","Anchorend","LoopID","RAD21_chr","RAD21_start","RAD21_end","RAD21_peakID","RAD21anchoverlap") #rename columns
+}}}
+
+#how many have no RAD21?
+RAD21check<-lapply(RAD21anchoverllist,function(x) nrow(subset(x,RAD21anchoverlap=="0")))
+RAD21checkdf<-data.frame()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+RAD21checkdf[paste0(FILT,"_",MUT),paste0(type,"_all")]<-length(unique(RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]]$LoopID))
+RAD21checkdf[paste0(FILT,"_",MUT),paste0(type,"_noRAD21")]<-nrow(subset(RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]],RAD21anchoverlap=="0"))
+}}}
+###ca 10% of enhancersL; less for promoters
+
+
+#read in reg-struc (RS) anchors RAD21 overlaps
+typesRS<-c("ES_anchors_enhancers","ES_anchors_structural","PS_anchors_promoters","PS_anchors_structural","PsP_anchors_promoters","PsP_anchors_structuralPromoter","EsP_anchors_enhancers","EsP_anchors_structuralPromoter")
+RAD21anchoverllist_RS<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in typesRS){
+path<-file.path(TSSOverlap,"RAD21centred","reg_struc_pairs",paste0(MUT,"_",FILT,"_paired_",type,".RAD21.2wayoverlap.bed"))
+RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]]<-RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]][,c(1:4,5:8,11)]
+colnames(RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]])<-c("Anchorchr","Anchorstart","Anchorend","LoopID","RAD21_chr","RAD21_start","RAD21_end","RAD21_peakID","RAD21anchoverlap") #rename columns
+}}}
+
+#how many have no RAD21?
+RAD21check2<-lapply(RAD21anchoverllist_RS,function(x) nrow(subset(x,RAD21anchoverlap=="0")))
+RAD21checkdf2<-data.frame()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+RAD21checkdf2[paste0(FILT,"_",MUT),paste0(type,"_all")]<-length(unique(RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]]$LoopID))
+RAD21checkdf2[paste0(FILT,"_",MUT),paste0(type,"_noRAD21")]<-nrow(subset(RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]],RAD21anchoverlap=="0"))
+}}}
+```
+
+
+##### filter for top RAD21 peak in each anchor and genereate RAD21 centred output bedfiles
+```{r}
+LoopTSSRADlist<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+df<-RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]]
+Looplist<-list()
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllRAD<-subset(df,df$LoopID == Loop) #all entries for the anchor of this loopID
+Loop_AllRADcpm<-subset(diffpeaks,row.names(diffpeaks) %in% Loop_AllRAD$RAD21_peakID) #look up RAD21 peaks in table
+TopRAD<-row.names(Loop_AllRADcpm[which.max(Loop_AllRADcpm$baseMean),]) #select the max baseMean peak 
+Loop_1RAD<-subset(Loop_AllRAD,Loop_AllRAD$RAD21_peakID == TopRAD) #select entry with max baseMean peak
+Looplist[[Loop]]<-Loop_1RAD #save in list
+}
+LoopRADdf<-do.call(rbind.data.frame, Looplist)
+LoopTSSRADlist[[paste0(FILT,"_",MUT,"_",type)]]<-LoopRADdf
+}}}
+
+#now filter out  pairs where one anchor has no RAD21
+
+summary(LoopTSSRADlist[[paste0("down.FC1_SA2mut_EP_anchors_enhancers")]]$LoopID %in% LoopTSSRADlist[[paste0("down.FC1_SA2mut_EP_anchors_promoters")]]$LoopID)
+summary(LoopTSSRADlist[[paste0("down.FC1_SA2mut_EP_anchors_promoters")]]$LoopID %in% LoopTSSRADlist[[paste0("down.FC1_SA2mut_EP_anchors_enhancers")]]$LoopID)
+#   Mode   FALSE    TRUE 
+#logical      15     115 
+LoopRADlistfilt<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]<-subset(LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]],LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$LoopID %in% LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$LoopID)
+LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]<-subset(LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]],LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$LoopID %in% LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$LoopID)
+
+LoopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]<-subset(LoopTSSRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]],LoopTSSRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$LoopID %in% LoopTSSRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$LoopID)
+LoopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]<-subset(LoopTSSRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]],LoopTSSRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$LoopID %in% LoopTSSRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$LoopID)
+
+LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]<-subset(LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]],LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]$LoopID %in% LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]$LoopID)
+LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]<-subset(LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]],LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]$LoopID %in% LoopTSSRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]$LoopID)
+}}
+
+
+#stats and barplot
+RAD21EPdf<-data.frame()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+RAD21EPdf[paste0(FILT,"_",MUT),"EP"]<-nrow(LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]])
+RAD21EPdf[paste0(FILT,"_",MUT),"EE"]<-nrow(LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]])
+RAD21EPdf[paste0(FILT,"_",MUT),"PP"]<-nrow(LoopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]])
+}}
+RAD21EPdfm<-melt(t(RAD21EPdf))
+colnames(RAD21EPdfm)<-c("LoopType","con","Freq")
+RAD21EPdfm$group<-factor(c(rep("SA2mut",6),rep("RAD21mut",6)),levels=c("SA2mut","RAD21mut"))
+RAD21EPdfm$change<-c(rep("strengthened",3),rep("weakened",3),rep("strengthened",3),rep("weakened",3))
+RAD21EPdfm$LoopType<-factor(RAD21EPdfm$LoopType,levels=c("EE", "EP", "PP"))
+
+p<-ggplot(RAD21EPdfm, aes(change, Freq,fill=LoopType)) +
+  geom_bar(position = "stack", stat="identity") +
+    xlab("") + ylab("number of loops") +
+    ggtitle("Paired Cohesin-H3K27ac-anchor loop type summary") +
+ theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 20, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) + ylim(0,310)+
+ guides(fill=guide_legend(title=""))+
+ facet_wrap(~ group)
+ggsave(p,file=file.path(WORKDIR,"HiC","figures","Loopstats","Diff.Paired_EP_Cohesin_looptypes.pdf"))
+
+AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]]
+
+#write new bedfiles of matched pairs
+dir.create(file.path(TSSOverlap,"TopRAD21centred"))
+
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+#get coords
+bed<-LoopRADlistfilt[[paste0(FILT,"_",MUT,"_",type)]][,c(5:7,4,8)]
+bed$V6<-1 #important add the column with "1" otherwise deeptools will change the name according to coordinates when clustering!
+#colnames(bed)<-c("chr","start","stop","Loopname")
+#write as bedfiles
+write.table(bed, file.path(TSSOverlap,"TopRAD21centred",paste0(MUT,"_",FILT,"_",type,"_RAD21top.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}}
+```
+
+
+##### same for unpaired H3K27ac loops: filter for top RAD21 peak in each anchor and genereate RAD21 centred output bedfiles
+```{r}
+LoopTSSRADlist2<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in typesRS){
+df<-RAD21anchoverllist_RS[[paste0(FILT,"_",MUT,"_",type)]]
+Looplist<-list()
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllRAD<-subset(df,df$LoopID == Loop) #all entries for the anchor of this loopID
+Loop_AllRADcpm<-subset(diffpeaks,row.names(diffpeaks) %in% Loop_AllRAD$RAD21_peakID) #look up RAD21 peaks in table
+TopRAD<-row.names(Loop_AllRADcpm[which.max(Loop_AllRADcpm$baseMean),]) #select the max baseMean peak 
+Loop_1RAD<-subset(Loop_AllRAD,Loop_AllRAD$RAD21_peakID == TopRAD) #select entry with max baseMean peak
+Looplist[[Loop]]<-Loop_1RAD #save in list
+}
+LoopRADdf<-do.call(rbind.data.frame, Looplist)
+LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_",type)]]<-LoopRADdf
+}}}
+
+#now filter out  pairs where one anchor has no RAD21
+
+summary(LoopTSSRADlist2[[paste0("down.FC1_SA2mut_ES_anchors_structural")]]$LoopID %in% LoopTSSRADlist2[[paste0("down.FC1_SA2mut_ES_anchors_enhancers")]]$LoopID)
+summary(LoopTSSRADlist2[[paste0("down.FC1_SA2mut_ES_anchors_enhancers")]]$LoopID %in% LoopTSSRADlist2[[paste0("down.FC1_SA2mut_ES_anchors_enhancers")]]$LoopID)
+
+
+LoopTSSRADlistfilt2<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_ES_anchors_enhancers")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_ES_anchors_enhancers")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_ES_anchors_enhancers")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_ES_anchors_structural")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_ES_anchors_structural")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_ES_anchors_structural")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_ES_anchors_structural")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_ES_anchors_enhancers")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_PS_anchors_promoters")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PS_anchors_promoters")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PS_anchors_promoters")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PS_anchors_structural")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_PS_anchors_structural")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PS_anchors_structural")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PS_anchors_structural")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PS_anchors_promoters")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_PsP_anchors_promoters")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PsP_anchors_promoters")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PsP_anchors_promoters")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PsP_anchors_structuralPromoter")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_PsP_anchors_structuralPromoter")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PsP_anchors_structuralPromoter")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PsP_anchors_structuralPromoter")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_PsP_anchors_promoters")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_EsP_anchors_enhancers")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_EsP_anchors_enhancers")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_EsP_anchors_enhancers")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_EsP_anchors_structuralPromoter")]]$LoopID)
+LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_EsP_anchors_structuralPromoter")]]<-subset(LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_EsP_anchors_structuralPromoter")]],LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_EsP_anchors_structuralPromoter")]]$LoopID %in% LoopTSSRADlist2[[paste0(FILT,"_",MUT,"_EsP_anchors_enhancers")]]$LoopID)
+}}
+
+
+#stats and barplot: reg-struct
+RAD21EPdf2<-data.frame()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+RAD21EPdf2[paste0(FILT,"_",MUT),"ES"]<-nrow(LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_ES_anchors_enhancers")]])
+RAD21EPdf2[paste0(FILT,"_",MUT),"PS"]<-nrow(LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_PS_anchors_promoters")]])
+RAD21EPdf2[paste0(FILT,"_",MUT),"PsP"]<-nrow(LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_PsP_anchors_structuralPromoter")]])
+RAD21EPdf2[paste0(FILT,"_",MUT),"EsP"]<-nrow(LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_EsP_anchors_structuralPromoter")]])
+}}
+RAD21EPdfm2<-melt(t(RAD21EPdf2))
+colnames(RAD21EPdfm2)<-c("LoopType","con","Freq")
+RAD21EPdfm2$group<-factor(c(rep("SA2mut",8),rep("RAD21mut",8)),levels=c("SA2mut","RAD21mut"))
+RAD21EPdfm2$change<-c(rep("strengthened",4),rep("weakened",4),rep("strengthened",4),rep("weakened",4))
+RAD21EPdfm2$LoopType<-factor(RAD21EPdfm2$LoopType,levels=c("ES", "PS", "PsP","EsP"))
+
+p<-ggplot(RAD21EPdfm2, aes(change, Freq,fill=LoopType)) +
+  geom_bar(position = "stack", stat="identity") +
+    xlab("") + ylab("number of loops") +
+    ggtitle("Regulatory-structural \n Cohesin-H3K27ac-anchor differential loop type summary") +
+ theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 20, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) + ylim(0,650)+
+ guides(fill=guide_legend(title=""))+
+ facet_wrap(~ group)
+ggsave(p,file=file.path(WORKDIR,"HiC","figures","Loopstats","Diff.Paired_reg-struc_Cohesin_looptypes.pdf"))
+
+#stats and barplot: reg-struct + reg-reg
+RAD21EPdf_RR_RS<-rbind(RAD21EPdfm,RAD21EPdfm2)
+RAD21EPdf_RR_RS$LoopType<-factor(RAD21EPdf_RR_RS$LoopType,levels=c("EP","PP","EE","EsP","PsP","ES","PS"))
+p<-ggplot(RAD21EPdf_RR_RS, aes(change, Freq,fill=LoopType)) +
+  geom_bar(position = "stack", stat="identity") +
+    xlab("") + ylab("number of loops") +
+    ggtitle("Differential loops \n with H3K27ac-marked cohesin-anchor(s) ") +
+  scale_fill_manual(values = c("EP"="darkgoldenrod3","PP"="indianred1","EE"="gold2","EsP"="khaki","PsP"="lightpink","PS"="ivory3","ES"="ivory4"),
+  labels = c("Enhancer-Promoter","Promoter-Promoter","Enhancer-Enhancer","Enhancer-structural Promoter","Promoter-structural Promoter","Enhancer-Structural","Promoter-Structural"))+
+ theme(
+  axis.text.x = element_text(angle=90,hjust=0.95,vjust=0.2),
+  axis.title=element_text(size=20,face="bold"), plot.title = element_text(size = 20, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) + ylim(0,1000)+
+ guides(fill=guide_legend(title=""))+
+ facet_wrap(~ group)
+ggsave(p,file=file.path(WORKDIR,"HiC","figures","Loopstats","Diff.Paired_Cohesin_reg-reg_reg-struct_looptypes.CPM1.pdf"))
+
+#write new bedfiles of matched pairs
+dir.create(file.path(TSSOverlap,"TopRAD21centred","reg_struc_pairs"))
+
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in typesRS){
+#get coords
+bed<-LoopTSSRADlistfilt2[[paste0(FILT,"_",MUT,"_",type)]][,c(5:7,4,8)]
+bed$V6<-1 #important add the column with "1" otherwise deeptools will change the name according to coordinates when clustering!
+#colnames(bed)<-c("chr","start","stop","Loopname")
+#write as bedfiles
+write.table(bed, file.path(TSSOverlap,"TopRAD21centred","reg_struc_pairs",paste0(MUT,"_",FILT,"_",type,"_RAD21top.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}}
+
+
+```
+
+
+
+
+
+###### alterantive filter:  top RAD21 peak with TSS in each anchor and genereate RAD21 centred output bedfiles
+```{r}
+##check: are all promoters found in the TSS-RAD21 overlap file?
+RAD21TSS[RAD21TSS$TSS_name==".","TSS_name"]<-NA
+
+summary(RAD21TSS$RAD21_peakID %in% row.names(diffpeaks))
+summary(row.names(diffpeaks) %in% RAD21TSS$RAD21_peakID)
+length(unique(RAD21TSS$RAD21_peakID))
+checkTSSRADdf<-data.frame()
+MUT<-"SA2mut"
+typesProm<-c("PP_anchors_promoters.plus", "EP_anchors_promoters", "PP_anchors_promoters.minus")
+      for (type in typesProm){
+df<-RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]]
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllRAD<-subset(df,df$LoopID == Loop) 
+Loop_AllRADTSS<-subset(RAD21TSS,RAD21TSS$RAD21_peakID %in% Loop_AllRAD$RAD21_peakID)
+#checkTSSRADdf[Loop,"RAD21_IDs"]<-c(Loop_AllRAD$RAD21_peakID)
+checkTSSRADdf[Loop,"RAD21_peakcount"]<-length(Loop_AllRAD$RAD21_peakID)
+#checkTSSRADdf[Loop,"TSS_IDs"]<-c(Loop_AllRADTSS$TSS_name)
+checkTSSRADdf[Loop,"TSS_count_inRAD21"]<-length(na.omit(unique(Loop_AllRADTSS$TSS_name)))
+allTSSofloopM<-AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]][(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]]$LoopID_plus==unique(Loop_AllRAD$LoopID)),"TSS_minus"]
+allTSSofloopP<-AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]][(AnchorTSS_CPM1_list_Comb[[paste0(FILT,"_",MUT)]]$LoopID_plus==unique(Loop_AllRAD$LoopID)),"TSS_plus"]
+allTSSofloopMs<-unique(strsplit(allTSSofloopM,",")[[1]])
+allTSSofloopPs<-unique(strsplit(allTSSofloopP,",")[[1]])
+checkTSSRADdf[Loop,"TSS_all"]<-length(na.omit(unique(c(allTSSofloopMs,allTSSofloopPs))))
+}}
+table(checkTSSRADdf$TSS_count_inRAD21)
+table(checkTSSRADdf$TSS_all,checkTSSRADdf$TSS_count_inRAD21)
+
+
+
+LoopTSStopRADlist<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+df<-RAD21anchoverllist[[paste0(FILT,"_",MUT,"_",type)]]
+Looplist<-list()
+Loopsinset<-unique(df$LoopID)
+for (Loop in Loopsinset) {
+Loop_AllRAD<-subset(df,df$LoopID == Loop) #all entries for the anchor of this loopID
+Loop_AllRADcpm<-subset(diffpeaks,row.names(diffpeaks) %in% Loop_AllRAD$RAD21_peakID) #look up RAD21 peaks in table
+Loop_AllRADTSS<-subset(RAD21TSS,RAD21TSS$RAD21_peakID %in% Loop_AllRAD$RAD21_peakID) 
+Loop_AllRADTSS<-Loop_AllRADTSS[!(is.na(Loop_AllRADTSS$TSS_name)),]
+###if no TSS in RAD21 peak, use the top cpm RAD21 peak
+if (length(unique(Loop_AllRADTSS$TSS_name))==0){
+TopRAD<-row.names(Loop_AllRADcpm[which.max(Loop_AllRADcpm$baseMean),]) #select the max baseMean peak 
+Loop_1RAD<-subset(Loop_AllRAD,Loop_AllRAD$RAD21_peakID == TopRAD) #select entry with max baseMean peak
+Looplist[[Loop]]<-Loop_1RAD #save in list
+}
+###if min 1 TSS in RAD21 peak, use this peak, if multiple use the top cpm out of these
+else {
+Loop_Loop_AllRADTSScpm<-subset(diffpeaks,row.names(diffpeaks) %in% unique(Loop_AllRADTSS$RAD21_peakID))
+TopRAD<-row.names(Loop_Loop_AllRADTSScpm[which.max(Loop_Loop_AllRADTSScpm$baseMean),]) #select the max baseMean peak 
+Loop_1RAD<-subset(Loop_AllRAD,Loop_AllRAD$RAD21_peakID == TopRAD) #select entry with max baseMean peak
+Looplist[[Loop]]<-Loop_1RAD #save in list
+}
+TopRAD<-row.names(Loop_AllRADcpm[which.max(Loop_AllRADcpm$baseMean),]) #select the max baseMean peak 
+Loop_1RAD<-subset(Loop_AllRAD,Loop_AllRAD$RAD21_peakID == TopRAD) #select entry with max baseMean peak
+Looplist[[Loop]]<-Loop_1RAD #save in list
+}
+LoopRADdf<-do.call(rbind.data.frame, Looplist)
+LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_",type)]]<-LoopRADdf
+}}}
+
+
+#now filter out  pairs where one anchor has no RAD21
+
+LoopTSStopRADlistfilt<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]<-subset(LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]],LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$LoopID %in% LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$LoopID)
+LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]<-subset(LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]],LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$LoopID %in% LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$LoopID)
+LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]<-subset(LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]],LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$LoopID %in% LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$LoopID)
+LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]<-subset(LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]],LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$LoopID %in% LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$LoopID)
+LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]<-subset(LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]],LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]$LoopID %in% LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]$LoopID)
+LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]<-subset(LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]],LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.minus")]]$LoopID %in% LoopTSStopRADlist[[paste0(FILT,"_",MUT,"_EE_anchors_enhancers.plus")]]$LoopID)
+}}
+
+
+#write new bedfiles of matched pairs
+dir.create(file.path(TSSOverlap,"TopRAD21inTSScentred"))
+
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in types){
+#get coords
+bed<-LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_",type)]][,c(5:7,4,8)]
+bed$V6<-1 #important add the column with "1" otherwise deeptools will change the name according to coordinates when clustering!
+#colnames(bed)<-c("chr","start","stop","Loopname")
+#write as bedfiles
+write.table(bed, file.path(TSSOverlap,"TopRAD21inTSScentred",paste0(MUT,"_",FILT,"_",type,"_RAD21top.bed")),row.names=F,quote=F,sep="\t",col.names=F)
+}}}
+
+##Change of selected peaks?
+summary(LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$RAD21_peakID %in% LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_enhancers")]]$RAD21_peakID)
+summary(LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$RAD21_peakID %in% LoopRADlistfilt[[paste0(FILT,"_",MUT,"_EP_anchors_promoters")]]$RAD21_peakID)
+summary(LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$RAD21_peakID %in% LoopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.plus")]]$RAD21_peakID)
+summary(LoopTSStopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$RAD21_peakID %in% LoopRADlistfilt[[paste0(FILT,"_",MUT,"_PP_anchors_promoters.minus")]]$RAD21_peakID)
+####no change for any!
+```
+
+
+###-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+# filter all diff loop with H3K27ac into E or P categories ignoring paired status
+## read peaks in anchors cented on H3K27ac or RAD21 peaks plus loop anchorID and coords
+```{r}
+overlaptypes<-c("CohesinAssEnhancers","CohesinAssEnhancers.RAD21centred")
+loopstatsbedALL<-vector(mode = "list", length = 0)
+for (MUT in MUTs) {
+  for (FILT in Filts){
+      for (type in overlaptypes){
+path<-file.path(AllEorEP,"2wayOverlap",paste0(MUT,"vsCTRL.loopAnchors.red.",FILT,".",type,".2wayOverlap.bed"))
+loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]]<-loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]][,c(1:4,6:11)]
+colnames(loopstatsbedALL[[paste0(type,"_DiffAnchors_",FILT,"_",MUT)]])<-c("Anchorchr","Anchorstart","Anchorend","AnchorID","Anchorstrand","peakchr","peakstart","peakend","peakname","peakoverlap") #rename columns
+}}}
+
+for (MUT in MUTs) {
+  for (FILT in Filts){
+path<-file.path(AllEorEP,"TSSanchorOverlap",paste0(MUT,"vsCTRL.loopAnchors.red.",FILT,".CohesinAssEnhancers.Overlap.TSS.2wayoverlap.bed"))
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-read.table(path, header=F, sep="\t") #read in  the bedfiles as tab sep. table
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-tidyr::separate_rows(loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],V4,sep=",",convert=FALSE)
+loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]<-loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]][,c(1:4,6:11)]
+colnames(loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]])<-c("Anchorchr","Anchorstart","Anchorend","AnchorID","Anchorstrand","TSSchr","TSSstart","TSSend","TSSname","TSSoverlap") #rename columns
+}}
+```
+## assign individual anchors as E or P 
+```{r}
+##############CPM1 filt
+All_AnchorTSS_CPM1_list<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+df<-loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+Looplist<-list()
+Loopsinset<-unique(df$AnchorID)
+for (Loop in Loopsinset) {
+Loop_AllTSS<-subset(df,df$AnchorID == Loop) #all entries for the anchor of this loopID
+ExpressedTSS<-subset(Loop_AllTSS,Loop_AllTSS$TSSname %in% GEXlistfilt[[MUT]]$genes)
+ExpressedTSSinloop<-paste(unique(ExpressedTSS$TSSname),collapse=",") #paste all TSS in this anchor into on string
+Loop_allTSSin1<-Loop_AllTSS[1,1:5] #get only the first entry to represnet the loop
+Loop_allTSSin1$TSS <- ExpressedTSSinloop #add the TSS string to preserve all associated TSS
+Looplist[[Loop]]<-Loop_allTSSin1 #save in list
+}
+LoopTSSdf<-do.call(rbind.data.frame, Looplist) #get a df from the list
+LoopTSSdf$EPstatus<-"Promoter" #assign status promoter
+LoopTSSdf[(LoopTSSdf$TSS==""),"EPstatus"]<-"Enhancer" #assign status enhancer if no TSS
+All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS")]]<-LoopTSSdf
+}}
+##############no CPM1
+All_AnchorTSS_noCPM_list<-list()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+df<-loopstatsbedALL[[paste0("TSS","CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+Looplist<-list()
+Loopsinset<-unique(df$AnchorID)
+for (Loop in Loopsinset) {
+Loop_AllTSS<-subset(df,df$AnchorID == Loop) #all entries for the anchor of this loopID
+ExpressedTSS<-subset(Loop_AllTSS,Loop_AllTSS$TSSname %in% GEXlist[[MUT]]$genes)
+ExpressedTSSinloop<-paste(unique(ExpressedTSS$TSSname),collapse=",") #paste all TSS in this anchor into on string
+Loop_allTSSin1<-Loop_AllTSS[1,1:5] #get only the first entry to represnet the loop
+Loop_allTSSin1$TSS <- ExpressedTSSinloop #add the TSS string to preserve all associated TSS
+Looplist[[Loop]]<-Loop_allTSSin1 #save in list
+}
+LoopTSSdf<-do.call(rbind.data.frame, Looplist) #get a df from the list
+LoopTSSdf$EPstatus<-"Promoter" #assign status promoter
+LoopTSSdf[(LoopTSSdf$TSS==""),"EPstatus"]<-"Enhancer" #assign status enhancer if no TSS
+All_AnchorTSS_noCPM_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS")]]<-LoopTSSdf
+}}
+```
+
+## assign peaks to these anchors
+```{r}
+#no cpm filt
+for (MUT in MUTs) {
+  for (FILT in Filts){
+df<-All_AnchorTSS_noCPM_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS")]]
+dfRAD<-loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]]
+dfH3K<-loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+Looplist<-list()
+Loopsinset<-df$AnchorID
+for (Loop in Loopsinset) {
+Loop_AllH3K<-subset(dfH3K,dfH3K$AnchorID == Loop & dfH3K$peakoverlap=="1") #all entries for the anchor of this loopID
+H3Kinloop<-paste(unique(Loop_AllH3K$peakname),collapse=",") #paste all peaks in this anchor into on string
+Loop_AllRAD<-subset(dfRAD,dfRAD$AnchorID == Loop & dfRAD$peakoverlap=="1") #all entries for the anchor of this loopID
+RADinloop<-paste(unique(Loop_AllRAD$peakname),collapse=",")
+df[(df$AnchorID == Loop),"RAD21peaks"]<-RADinloop
+df[(df$AnchorID == Loop),"H3K27acpeaks"]<-H3Kinloop
+}
+All_AnchorTSS_noCPM_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]]<-df
+}}
+
+
+#save these results for other analyses (i.e. gene assignments to RAD21 peaks)
+for (MUT in MUTs) {
+comb<-rbind(All_AnchorTSS_noCPM_list[[paste0("up.FC1_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]],All_AnchorTSS_noCPM_list[[paste0("down.FC1_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]])
+write.table(comb,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("CohesinAssEnhancer_TSS_peakIDs_up.down","_",MUT,".noCPMfilt.txt")),row.names=F,quote=F,sep="\t")
+}
+
+#cpm1 filt
+for (MUT in MUTs) {
+  for (FILT in Filts){
+df<-All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS")]]
+dfRAD<-loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]]
+dfH3K<-loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]]
+Looplist<-list()
+Loopsinset<-df$AnchorID
+for (Loop in Loopsinset) {
+Loop_AllH3K<-subset(dfH3K,dfH3K$AnchorID == Loop & dfH3K$peakoverlap=="1") #all entries for the anchor of this loopID
+H3Kinloop<-paste(unique(Loop_AllH3K$peakname),collapse=",") #paste all peaks in this anchor into on string
+Loop_AllRAD<-subset(dfRAD,dfRAD$AnchorID == Loop & dfRAD$peakoverlap=="1") #all entries for the anchor of this loopID
+RADinloop<-paste(unique(Loop_AllRAD$peakname),collapse=",")
+df[(df$AnchorID == Loop),"RAD21peaks"]<-RADinloop
+df[(df$AnchorID == Loop),"H3K27acpeaks"]<-H3Kinloop
+}
+All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]]<-df
+}}
+
+
+#save these results for other analyses (i.e. gene assignments to RAD21 peaks)
+for (MUT in MUTs) {
+comb<-rbind(All_AnchorTSS_CPM1_list[[paste0("up.FC1_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]],All_AnchorTSS_CPM1_list[[paste0("down.FC1_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]])
+write.table(comb,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("CohesinAssEnhancer_TSS_peakIDs_up.down","_",MUT,".txt")),row.names=F,quote=F,sep="\t")
+}
+
+#################################################continue with cpm1 filt
+#separate peaks by E-P status of the anchor -> bedfiles
+dir.create(file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus"))
+statspeaks<-data.frame()
+for (MUT in MUTs) {
+  for (FILT in Filts){
+  #get all enhancer peaks
+enh<-subset(All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]],EPstatus=="Enhancer")
+enhH3K27names<-unlist(lapply(enh$H3K27acpeaks,function(x) strsplit(as.character(x), ",")))
+enhRAD21names<-unlist(lapply(enh$RAD21peaks,function(x) strsplit(as.character(x), ",")))
+enhRAD21bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]],peakname %in% enhRAD21names)[,c(6:10)]
+enhH3K27bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],peakname %in% enhH3K27names)[,c(6:10)]
+  #get all promoter peaks
+prom<-subset(All_AnchorTSS_CPM1_list[[paste0(FILT,"_",MUT,"CohesinAssEnhancer_TSS_peakIDs")]],EPstatus=="Promoter")
+promH3K27names<-unlist(lapply(prom$H3K27acpeaks,function(x) strsplit(as.character(x), ",")))
+promRAD21names<-unlist(lapply(prom$RAD21peaks,function(x) strsplit(as.character(x), ",")))
+promRAD21bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers.RAD21centred_DiffAnchors_",FILT,"_",MUT)]],peakname %in% promRAD21names)[,c(6:10)]
+promH3K27bed<-subset(loopstatsbedALL[[paste0("CohesinAssEnhancers_DiffAnchors_",FILT,"_",MUT)]],peakname %in% promH3K27names)[,c(6:10)]
+#write bedfiles with peaks only
+write.table(enhRAD21bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Enhancer_RAD21peaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(enhH3K27bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Enhancer_H3K27acpeaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(promRAD21bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Promoter_RAD21peaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(promH3K27bed,file.path(AllEorEP,"TSSanchorOverlap","peaksSplitByAnchorTSSstatus",paste0("Promoter_H3K27acpeaks.",FILT,"_",MUT,".bed")),row.names=F,quote=F,sep="\t",col.names=F)
+#count peaks
+statspeaks[paste0(MUT,".",FILT),"Enhancer_RAD21peaks"]<-nrow(enhRAD21bed)
+statspeaks[paste0(MUT,".",FILT),"Promoter_RAD21peaks"]<-nrow(promRAD21bed)
+statspeaks[paste0(MUT,".",FILT),"Enhancer_H3Kpeaks"]<-nrow(enhH3K27bed)
+statspeaks[paste0(MUT,".",FILT),"Promoter_H3Kpeaks"]<-nrow(promH3K27bed)
+}}
+```
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,471 @@
+---
+title: "RAD21 enrichment at diffloop anchors and STAG1/2 dominant positions in CD34 cohesin KD"
+author: "Alexander Fischer"
+date: "03 2022"
+output: html_document
+---
+
+#rbioc_3-12
+# Load libraries set paths
+```{r setup, include=FALSE}
+DIR_DATA="/misc/data"
+#directories for HIC associated RAD21 peaks
+INPUTDIR=file.path(DIR_DATA,"analysis/project_cohesin/CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12")
+WORKDIR_CD34=file.path(DIR_DATA,"analysis/project_cohesin/CD34/HiC_KDs/DeepSeq_Analysis")
+FIGURESDIR=file.path(WORKDIR_CD34,"figures")
+
+LOOPDIR=file.path(WORKDIR_CD34,"loops","withoutXY")
+diffanchorsn2t=file.path(LOOPDIR,"differentialanchorsn2t")
+overlapsplitdir=file.path(diffanchorsn2t,"splitbyoverlap")
+
+##loop subtypes 
+EPpairs=file.path(diffanchorsn2t,"AnchorsOverlapPairs/TSSoverlap/RAD21centred") #regulatoy
+STRUCANCHS=file.path(diffanchorsn2t,"ChIPoverlap/structural_Loops") #structural
+
+#directories for SA1/2 dominant site associated peaks
+WORDIR_CD34_2=file.path(INPUTDIR,"diffPeaks/SA1vsSA2")
+FIGURESDIR_dom=file.path(INPUTDIR,"figures/GSEA")
+
+#libraries
+library(ggplot2)
+library(edgeR)
+library(dplyr)
+library(cowplot)
+
+#variables
+KDs<-c("SA2KD","SA1KD")
+Filts<-c("up.FC1", "down.FC1")
+```
+# read in data and set variables
+```{r}
+#read in data
+data <- read.delim(file.path(INPUTDIR,"CD34_RAD21.peaks.ann.Rinput.txt"), row.names="ID")
+#set variables
+group <- factor(c(rep("CTRL",10), rep("SA1KD",5), rep("SA2KD",6), rep("RAD21KD",4)))
+batch <- factor(c(14,14,17,18,19,21,22,24,27,28,14,17,21,27,28,14,17,20,21,22,28,18,22,27,28))
+```
+
+# edge R fit
+```{r}
+d <- DGEList(counts=data,group=group)
+d <- calcNormFactors(d)
+design <- model.matrix(~0 + group + batch)
+rownames(design) <- colnames(d)
+d <- estimateDisp(d, design, robust=TRUE)
+d$common.dispersion
+fit <- glmQLFit(d, design)
+#contrasts
+conSA1 <- makeContrasts(groupSA1KD - groupCTRL, levels=design)
+conSA2 <- makeContrasts(groupSA2KD - groupCTRL, levels=design)
+#resulttables
+res1 <- glmQLFTest(fit, contrast=conSA1)
+res2 <- glmQLFTest(fit, contrast=conSA2)
+```
+
+# RAD21 Peak set Enrichment analyses in STAG1 and STAG2 KD HSPCs vs CTRL HSPCs
+
+## PSEA of SA1/2 dominant site associated RAD21 peaks in STAG KDs
+```{r}
+#read in RAD21 peak names with STAG1 or STAG2 domination
+SA12dom<-vector(mode = "list")
+SA12dom[["SA1dom"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"SA2vsSA1.allCD34.RAD21.peaks_edgeR.2folddown.txt"), header=T, sep="\t",row.names=1))
+SA12dom[["SA2dom"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"SA2vsSA1.allCD34.RAD21.peaks_edgeR.2foldup.txt"), header=T, sep="\t",row.names=1))
+SA12dom[["common"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"SA2vsSA1.allCD34.RAD21.peaks_edgeR.common.txt"), header=T, sep="\t",row.names=1))
+
+#set index
+cats<-c("SA1dom","SA2dom","common")
+for (cat in cats) {
+SA12dom[[paste0("ind_",cat)]]<- rownames(fit) %in% SA12dom[[cat]]
+}
+#index list for complete set
+SA12dom[[paste0("ind_all")]]<- list(SA12dom[["ind_SA1dom"]],SA12dom[["ind_SA2dom"]],SA12dom[["ind_common"]])
+names(SA12dom[[paste0("ind_all")]])<-cats
+
+#fry for all three types at once in STAG2 or STAG1 KD contrast
+##STAG2 KD
+fr_SA2indDOM <- fry(d, index=SA12dom[[paste0("ind_all")]], design=design, contrast=conSA2)
+fr_SA2indDOM
+write.table(fr_SA2indDOM,file=file.path(FIGURESDIR_dom,"PSEA.RAD21.at.STAGpreference.pos.SA2KDvsCTRL.txt"),sep="\t",quote=FALSE)
+##STAG1 KD
+fr_SA1indDOM <- fry(d, index=SA12dom[[paste0("ind_all")]], design=design, contrast=conSA1)
+fr_SA1indDOM
+write.table(fr_SA1indDOM,file=file.path(FIGURESDIR_dom,"PSEA.RAD21.at.STAGpreference.pos.SA1KDvsCTRL.txt"),sep="\t",quote=FALSE)
+
+
+
+#barcode plots
+pdf(file=file.path(FIGURESDIR_dom,"edgeR_barcodeplot_RAD21.at.STAGpreference.pos.SA1KDvsCTRL.pdf"), height=6, width=6)
+barcodeplot(res1$table$logFC, 
+            index=SA12dom[["ind_SA2dom"]] ,
+            index2=SA12dom[["ind_SA1dom"]],
+            labels=c("CTRL-HSPCs","STA1GKD"),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("RAD21 at STAG dominant positions"), cex.main=0.5,
+            col.bars=c("#12cb65","#835f04"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: RAD21 peaks at SA2 dominant positions  '~'('*.(fr_SA1indDOM["SA2dom","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(fr_SA1indDOM["SA2dom","FDR"])*'('*.(fr_SA1indDOM["SA2dom","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('golden bars: RAD21 peaks at SA1 dominant positions  '~'('*.(fr_SA1indDOM["SA1dom","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(fr_SA1indDOM["SA1dom","FDR"])*'('*.(fr_SA1indDOM["SA1dom","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+
+pdf(file=file.path(FIGURESDIR_dom,"edgeR_barcodeplot_RAD21.at.STAGpreference.pos.SA2KDvsCTRL.pdf"), height=6, width=6)
+barcodeplot(res2$table$logFC, 
+            index=SA12dom[["ind_SA2dom"]] ,
+            index2=SA12dom[["ind_SA1dom"]],
+            labels=c("CTRL-HSPCs","STA2GKD"),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("RAD21 at STAG dominant positions"), cex.main=0.5,
+            col.bars=c("#12cb65","#835f04"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: RAD21 peaks at SA2 dominant positions  '~'('*.(fr_SA2indDOM["SA2dom","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(fr_SA2indDOM["SA2dom","FDR"])*'('*.(fr_SA2indDOM["SA2dom","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('golden bars: RAD21 peaks at SA1 dominant positions  '~'('*.(fr_SA2indDOM["SA1dom","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(fr_SA2indDOM["SA1dom","FDR"])*'('*.(fr_SA2indDOM["SA1dom","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+```
+
+## PSEA of SA1/2 dominant site associated RAD21 peaks divided by CTCF status in STAG KDs
+```{r}
+#read in RAD21 peak names with STAG1 or STAG2 domination subset by CTCF overlap
+###using same peaksets as above but separated by CTCF###
+SA12domBYCTCF<-vector(mode = "list")
+SA12domBYCTCF[["SA1dom_noCTCF"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"subsetByCTCF","SA1dom_noCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["SA1dom_withCTCF"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"subsetByCTCF","SA1dom_withCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["SA2dom_noCTCF"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"subsetByCTCF","SA2dom_noCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["SA2dom_withCTCF"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"subsetByCTCF","SA2dom_withCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["common_noCTCF"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"subsetByCTCF","common_noCTCF.txt"), header=T, sep="\t",row.names=1))
+SA12domBYCTCF[["common_withCTCF"]]<-row.names(read.delim(file.path(WORDIR_CD34_2,"subsetByCTCF","common_withCTCF.txt"), header=T, sep="\t",row.names=1))
+
+
+#set index
+cats<-c("SA1dom_noCTCF","SA1dom_withCTCF","SA2dom_noCTCF","SA2dom_withCTCF","common_noCTCF","common_withCTCF")
+for (cat in cats) {
+SA12domBYCTCF[[paste0("ind_",cat)]]<- rownames(fit) %in% SA12domBYCTCF[[cat]]
+}
+#index list for complete set
+SA12domBYCTCF[[paste0("ind_all")]]<- list(SA12domBYCTCF[["ind_SA1dom_noCTCF"]],SA12domBYCTCF[["ind_SA1dom_withCTCF"]],SA12domBYCTCF[["ind_SA2dom_noCTCF"]],SA12domBYCTCF[["ind_SA2dom_withCTCF"]],SA12domBYCTCF[["ind_common_noCTCF"]],SA12domBYCTCF[["ind_common_withCTCF"]])
+names(SA12domBYCTCF[[paste0("ind_all")]])<-cats
+
+#fry for all three types at once in STAG2 or STAG1 KD contrast
+fr_SA2indDOM_byCTCF <- fry(d, index=SA12domBYCTCF[[paste0("ind_all")]], design=design, contrast=conSA2)
+fr_SA2indDOM_byCTCF
+#                NGenes Direction       PValue          FDR PValue.Mixed
+#SA1dom_withCTCF    926        Up 5.428555e-09 3.257133e-08 2.343432e-11
+#SA1dom_noCTCF     1128      Down 2.251957e-04 6.755870e-04 2.228318e-06
+#common_noCTCF    27244      Down 6.629236e-04 1.325847e-03 3.726199e-07
+#SA2dom_noCTCF      349      Down 9.272551e-04 1.390883e-03 3.259361e-06
+#common_withCTCF  48246        Up 1.416997e-03 1.700396e-03 6.326759e-10
+#SA2dom_withCTCF    968      Down 4.889823e-03 4.889823e-03 4.617335e-07
+
+fr_SA1indDOM_byCTCF <- fry(d, index=SA12domBYCTCF[[paste0("ind_all")]], design=design, contrast=conSA1)
+fr_SA1indDOM_byCTCF
+#                NGenes Direction      PValue         FDR PValue.Mixed
+#SA1dom_withCTCF    926      Down 0.001583374 0.009500246 4.723769e-05
+#SA2dom_withCTCF    968        Up 0.005218957 0.015656871 1.482349e-03
+#common_withCTCF  48246        Up 0.130130544 0.214611527 1.444558e-02
+#common_noCTCF    27244      Down 0.183670846 0.214611527 6.162534e-03
+#SA2dom_noCTCF      349      Down 0.191049195 0.214611527 2.056545e-01
+#SA1dom_noCTCF     1128      Down 0.214611527 0.214611527 1.567535e-02
+
+dir.create(file.path(FIGURESDIR_dom,"byCTCFsubset"))
+#barcode plots showing STAG1 vs STAG2 dominant pos divided by CTCF subset in STAG1 or STAG2 KD contrasts
+CTCFcats=c("noCTCF","withCTCF")
+KDs=c("STAG1KD","STAG2KD")
+reslist<-list(res1,res2)
+names(reslist)<-KDs
+frylist<-list(fr_SA1indDOM_byCTCF,fr_SA2indDOM_byCTCF)
+names(frylist)<-KDs
+for (CTCF in CTCFcats){
+  for (KD in KDs){
+pdf(file=file.path(FIGURESDIR_dom,"byCTCFsubset",paste0("edgeR_barcodeplot_RAD21",CTCF,".STAGdom.",KD,".pdf")), height=6, width=6)
+barcodeplot(reslist[[KD]]$table$logFC, 
+            index=SA12domBYCTCF[[paste0("ind_SA2dom_",CTCF)]] ,
+            index2=SA12domBYCTCF[[paste0("ind_SA1dom_",CTCF)]],
+            labels=c("CTRL-HSPCs",KD),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0(KD, ": RAD21 at STAG dominant positions ", CTCF), cex.main=0.5,
+            col.bars=c("#12cb65","#835f04"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('green bars: RAD21 peaks at SA2 dominant positions  '~'('*.(frylist[[KD]][paste0("SA2dom_",CTCF),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[KD]][paste0("SA2dom_",CTCF),"FDR"])*'('*.(frylist[[KD]][paste0("SA2dom_",CTCF),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('golden bars: RAD21 peaks at SA1 dominant positions  '~'('*.(frylist[[KD]][paste0("SA1dom_",CTCF),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[KD]][paste0("SA1dom_",CTCF),"FDR"])*'('*.(frylist[[KD]][paste0("SA1dom_",CTCF),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+#barcode plots showing common pos divided by CTCF subset in STAG1 or STAG2 KD contrasts
+for (KD in KDs){
+pdf(file=file.path(FIGURESDIR_dom,"byCTCFsubset",paste0("edgeR_barcodeplot_RAD21.common.byCTCFstatus.",KD,".pdf")), height=6, width=6)
+barcodeplot(reslist[[KD]]$table$logFC, 
+            index=SA12domBYCTCF[[paste0("ind_common_withCTCF")]] ,
+            index2=SA12domBYCTCF[[paste0("ind_common_noCTCF")]],
+            labels=c("CTRL-HSPCs",KD),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0(KD, ": RAD21 at STAG1/2 common positions "), cex.main=0.5,
+            col.bars=c("#3737dfc0","#313131"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('RAD21 peaks at common sites with CTCF '~'('*.(frylist[[KD]]["common_withCTCF","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[KD]]["common_withCTCF","FDR"])*'('*.(frylist[[KD]]["common_withCTCF","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('RAD21 peaks at common sites without CTCF  '~'('*.(frylist[[KD]]["common_noCTCF","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(frylist[[KD]]["common_noCTCF","FDR"])*'('*.(frylist[[KD]]["common_noCTCF","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+```
+
+### summarize Padj values in barplot for STAG dominant sites by CTCF status
+```{r}
+##negative log FDR (positive value)
+fr_SA2indDOM_byCTCF$logFDR<--log(fr_SA2indDOM_byCTCF$FDR)
+fr_SA1indDOM_byCTCF$logFDR<--log(fr_SA1indDOM_byCTCF$FDR)
+#for down direction use log FDR (negativ value)
+fr_SA2indDOM_byCTCF$logFDR[fr_SA2indDOM_byCTCF$Direction == "Down"] <- log(subset(fr_SA2indDOM_byCTCF,Direction=="Down")[,"FDR"])
+fr_SA1indDOM_byCTCF$logFDR[fr_SA1indDOM_byCTCF$Direction == "Down"] <- log(subset(fr_SA1indDOM_byCTCF,Direction=="Down")[,"FDR"])
+#define categories
+fr_SA2indDOM_byCTCF$STAGcat<-strsplit2(rownames(fr_SA2indDOM_byCTCF),"_",fixed = TRUE)[,1]
+fr_SA2indDOM_byCTCF$CTCFcat<-strsplit2(rownames(fr_SA2indDOM_byCTCF),"_",fixed = TRUE)[,2]
+fr_SA1indDOM_byCTCF$STAGcat<-strsplit2(rownames(fr_SA1indDOM_byCTCF),"_",fixed = TRUE)[,1]
+fr_SA1indDOM_byCTCF$CTCFcat<-strsplit2(rownames(fr_SA1indDOM_byCTCF),"_",fixed = TRUE)[,2]
+#set levels
+fr_SA2indDOM_byCTCF$STAGcat<-factor(fr_SA2indDOM_byCTCF$STAGcat,levels=c("SA2dom","SA1dom","common"))
+fr_SA2indDOM_byCTCF$CTCFcat<-factor(fr_SA2indDOM_byCTCF$CTCFcat,levels=c("withCTCF","noCTCF"))
+fr_SA1indDOM_byCTCF$STAGcat<-factor(fr_SA1indDOM_byCTCF$STAGcat,levels=c("SA2dom","SA1dom","common"))
+fr_SA1indDOM_byCTCF$CTCFcat<-factor(fr_SA1indDOM_byCTCF$CTCFcat,levels=c("withCTCF","noCTCF"))
+
+
+##plot for STAG2KD
+#
+p1<-ggplot(fr_SA2indDOM_byCTCF, aes(x= logFDR, y= rownames(fr_SA2indDOM_byCTCF),fill = STAGcat)) +
+geom_bar(aes(colour=CTCFcat),size=1.5, width=0.8, position = position_dodge(width=0.5), stat="identity") +
+  scale_fill_manual(values = c("SA2dom"="#12cb65","SA1dom"="darkgoldenrod3","common"="grey"))+
+  scale_color_manual(values = c("noCTCF"="firebrick1","withCTCF"="darkblue"))+
+  scale_x_continuous(limits = c(-18,18),labels=abs,breaks = seq(-18,18,by=6)) + 
+  xlab("- log2 FDR of RAD21 PSEA") + ylab(" ") + 
+  ggtitle("STAG2KD vs CTRL") +
+  theme(
+  axis.text.x = element_text(angle=0,vjust=0.2,size=16),
+  legend.text = element_text(angle=0,vjust=0.2,size=16),
+  axis.text.y = element_text(angle=0,hjust=0.95,vjust=0.2,size=0),
+  legend.position="none", legend.title=element_blank(),
+  axis.title=element_text(size=16,face="bold"), plot.title = element_text(size = 20, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(colour = "black"),)+
+geom_vline(xintercept = -log2(0.05),linetype = 'dashed') + 
+geom_vline(xintercept = log2(0.05),linetype = 'dashed',color="black")+
+geom_text(aes(x=-12,y="common_withCTCF",label="Down"),size=6,vjust=-0.1,fontface = "bold")+
+geom_text(aes(x=12,y="common_withCTCF",label="Up"),size=6,vjust=-0.1,fontface = "bold")
+
+pdf(file=file.path(FIGURESDIR_dom,"byCTCFsubset",paste0("RAD21.PSEA.summary.byCTCF.STAG2KD.pdf")), height=3, width=10)
+plot(p1)
+dev.off()
+
+#if no y labels desired use:
+#axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank()
+
+##plot for STAG1KD
+
+p2<-ggplot(fr_SA1indDOM_byCTCF, aes(x= logFDR, y= rownames(fr_SA1indDOM_byCTCF),fill = STAGcat)) +
+geom_bar(aes(colour=CTCFcat), size=1.5,width=0.8, position = position_dodge(width=0.5), stat="identity") +
+  scale_fill_manual(values = c("SA2dom"="#12cb65","SA1dom"="darkgoldenrod3","common"="grey"))+
+  scale_color_manual(values = c("noCTCF"="firebrick1","withCTCF"="darkblue"))+
+  scale_x_continuous(limits = c(-18,18),labels=abs,breaks = seq(-18,18,by=6)) + 
+  xlab("- log2 FDR of RAD21 PSEA") + ylab(" ") + 
+  ggtitle("STAG1KD vs CTRL") +
+  theme(
+  axis.text.x = element_text(angle=0,vjust=0.2,size=16),
+  axis.text.y = element_text(angle=0,hjust=0.95,vjust=0.2,size=0),
+  legend.text = element_text(angle=0,vjust=0.2,size=16),
+  legend.position="none", legend.title=element_blank(),
+  axis.title=element_text(size=16,face="bold"), plot.title = element_text(size = 20, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(colour = "black"),)+
+geom_vline(xintercept = -log2(0.05),linetype = 'dashed') + 
+geom_vline(xintercept = log2(0.05),linetype = 'dashed',color="black")+
+geom_text(aes(x=-12,y="common_withCTCF",label="Down"),size=6,vjust=-0.1,fontface = "bold")+
+geom_text(aes(x=12,y="common_withCTCF",label="Up"),size=6,vjust=-0.1,fontface = "bold")
+
+pdf(file=file.path(FIGURESDIR_dom,"byCTCFsubset",paste0("RAD21.PSEA.summary.byCTCF.STAG1KD.pdf")), height=3, width=10)
+plot(p2)
+dev.off()
+
+#both combined
+##extract legend
+legend_b <- get_legend(
+  p1 + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+##plot both plots in grid and add one legend
+pgrid <- plot_grid(p1, p2, ncol = 2)
+pdf(file=file.path(FIGURESDIR_dom,"byCTCFsubset",paste0("RAD21.PSEA.summary.byCTCF.STAG1_2_KD.pdf")), height=4, width=12)
+plot_grid(pgrid,legend_b,ncol=1,rel_heights=c(1.2,0.2))
+dev.off()
+```
+
+# PSEA of RAD21 peaks at differential loop subtypes in STAG KDs (- without XY chromosomes; based on DESEQ2 n2t analyis)
+### all structural-anchor associated RAD21 peaks
+```{r}
+Filts<-c("up.FC1", "down.FC1")
+KDs<-c("SA2KD","SA1KD")
+
+conslist<-list(SA2KD=conSA2,SA1KD=conSA1)
+colorlist<-list(SA2KD="seagreen2",SA1KD="darkgoldenrod")
+reslist2<-list(SA1KD=res1$table$logFC,SA2KD=res2$table$logFC)
+
+
+
+
+RAD21strucAnch<-list()
+for (KD in KDs) {
+  for (FILT in Filts){
+path<-file.path(STRUCANCHS,paste0(KD,"vsCTRL.loopAnchors.red.", FILT, ".structural.RAD21.centred.bed"))
+##bedfiles
+RAD21strucAnch[[paste0(FILT,"_",KD)]]<-read.table(path, header=F, sep="\t")
+##indices
+RAD21strucAnch[[paste0("ind_struct_",KD,FILT)]]<-rownames(fit) %in% RAD21strucAnch[[paste0(FILT,"_",KD)]]$V4
+  }
+}
+
+##combined struc. Anchs. up + down
+for (KD in KDs) {
+#feature names
+RAD21strucAnch[[paste0("struct.all.",KD)]]<-list(RAD21strucAnch[[paste0("up.FC1_",KD)]]$V4,RAD21strucAnch[[paste0("down.FC1_",KD)]]$V4)
+names(RAD21strucAnch[[paste0("struct.all.",KD)]])<-c("up.FC1_structuralLoops","down.FC1_structuralLoops")
+#indices
+RAD21strucAnch[[paste0("ind_struct.all.",KD)]]<-list(RAD21strucAnch[[paste0("ind_struct_",KD,"up.FC1")]],RAD21strucAnch[[paste0("ind_struct_",KD,"down.FC1")]])
+names(RAD21strucAnch[[paste0("ind_struct.all.",KD)]])<-c("up.FC1_structuralLoops","down.FC1_structuralLoops")
+}
+
+PSEAlist<-list()
+for (KD in KDs) {
+  PSEAlist[[paste0(KD,"fr_struct.all")]] <- fry(d, index=RAD21strucAnch[[paste0("ind_struct.all.",KD)]], design=design, contrast=conslist[[KD]])
+}
+PSEAlist
+#$SA2KDfr_struct.all
+#                         NGenes Direction       PValue          FDR
+#up.FC1_structuralLoops     1042        Up 3.641680e-07 7.283361e-07
+#down.FC1_structuralLoops    447        Up 1.372823e-03 1.372823e-03
+#$SA1KDfr_struct.all
+#                         NGenes Direction    PValue      FDR PValue.Mixed
+#down.FC1_structuralLoops    967      Down 0.8811266 0.973456  0.026239765
+#up.FC1_structuralLoops       69        Up 0.9734560 0.973456  0.007355809
+
+dir.create(file.path(FIGURESDIR,"GSEA","diffStructloops"))
+#barcodeplots fry results: structural loops
+for (KD in KDs) {
+type="structuralLoops"
+text1<-paste0(colorlist[[KD]],' bars: RAD21 peaks in ',type,' at strengthened loop anchors ')
+text2<-paste0('red bars: RAD21 peaks in ',type,' at weakended loop anchors ')
+pdf(file=file.path(FIGURESDIR,"GSEA","diffStructloops",paste0("edgeR.PSEA.",KD,".RAD21peaks.diffloop.FC1.barcodeplot.",type,".pdf")), height=6, width=6)
+barcodeplot(reslist2[[KD]], 
+            index=RAD21strucAnch[[paste0("ind_struct_",KD,"up.FC1")]] ,
+            index2=RAD21strucAnch[[paste0("ind_struct_",KD,"down.FC1")]],
+            labels=c("CTRL",KD),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 0.5, 
+            main=paste0("RAD21 at differential structural loop anchors"), cex.main=0.5,
+            col.bars=c(colorlist[[KD]],"firebrick1"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote(.(text1)~'('*.(PSEAlist[[paste0(KD,"fr_struct.all")]][paste0("up.FC1_",type),"NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(KD,"fr_struct.all")]][paste0("up.FC1_",type),"FDR"])*'('*.(PSEAlist[[paste0(KD,"fr_struct.all")]][paste0("up.FC1_",type),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote(.(text2)~'('*.(PSEAlist[[paste0(KD,"fr_struct.all")]][paste0("down.FC1_",type),"NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(KD,"fr_struct.all")]][paste0("down.FC1_",type),"FDR"])*'('*.(PSEAlist[[paste0(KD,"fr_struct.all")]][paste0("down.FC1_",type),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+```
+
+
+### all diff. regulatory loop anchor RAD21 peaks without XY chrom
+```{r}
+RAD21EPanch2<-list()
+
+for (KD in KDs) {
+  for (FILT in Filts){
+path<-file.path(diffanchorsn2t,"H3K27overlap",paste0(KD,"vsCTRL.loopAnchors.red.", FILT, ".H3K27accentred.RAD21centred.bed"))
+RAD21EPanch2[[paste0(FILT,"_",KD)]]<-read.table(path, header=F, sep="\t")
+RAD21EPanch2[[paste0("ind",FILT,"_",KD)]]<- rownames(fit) %in% RAD21EPanch2[[paste0(FILT,"_",KD)]]$V4
+  }
+}
+for (KD in KDs) {
+RAD21EPanch2[[paste0("ind_",KD)]]<-list(RAD21EPanch2[[paste0("ind","up.FC1","_",KD)]],RAD21EPanch2[[paste0("ind","down.FC1","_",KD)]])
+names(RAD21EPanch2[[paste0("ind_",KD)]])<-c("up.FC1","down.FC1")
+}
+
+
+
+#SA2 vs CTRL fry
+fr_SA2indEP <- fry(d, index=SA2indEP, design=design, contrast=conSA2)
+gse_SA2indEP <- fr_SA2indEP[names(SA2indEP),] %>% tibble::rownames_to_column("Set")
+gse_SA2indEP
+#            Set NGenes Direction      PValue         FDR PValue.Mixed
+#   up.FC1_SA2KD    220        Up 0.482395977 0.482395977 5.970206e-11
+# down.FC1_SA2KD    185      Down 0.004991882 0.009983764 1.152832e-07
+
+
+for (KD in KDs) {
+  PSEAlist[[paste0(KD,"fr_EP.all")]] <- fry(d, index=RAD21EPanch2[[paste0("ind_",KD)]], design=design, contrast=conslist[[KD]])
+}
+PSEAlist
+#$SA2KDfr_EP.all
+#         NGenes Direction     PValue        FDR PValue.Mixed    FDR.Mixed
+#down.FC1    144      Down 0.01031072 0.02062144 7.305477e-08 7.305477e-08
+#up.FC1      193        Up 0.25265325 0.25265325 6.096301e-11 1.219260e-10
+
+#$SA1KDfr_EP.all
+#         NGenes Direction    PValue       FDR PValue.Mixed FDR.Mixed
+#up.FC1       31      Down 0.8070268 0.9311209   0.56434099 0.5643410
+#down.FC1    193      Down 0.9311209 0.9311209   0.07462831 0.1492566
+
+
+
+dir.create(file.path(FIGURESDIR,"GSEA","diffRegulatoryloops"))
+#barcodeplots fry results: structural loops
+for (KD in KDs) {
+type="regulatoryLoops"
+text1<-paste0('Strenghtend regulatory anchor: RAD21 peaks ')
+text2<-paste0('Weakened regulatory anchor: RAD21 peaks ')
+pdf(file=file.path(FIGURESDIR,"GSEA","diffRegulatoryloops",paste0("edgeR.PSEA.",KD,".RAD21peaks.diffloop.FC1.barcodeplot.",type,".pdf")), height=4, width=5)
+barcodeplot(reslist2[[KD]], 
+            index=RAD21EPanch2[[paste0("ind","up.FC1","_",KD)]] ,
+            index2=RAD21EPanch2[[paste0("ind","down.FC1","_",KD)]],
+            labels=c("CTRL",KD),
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"),
+            cex.axis = 1, 
+            main=paste0(""), cex.main=0.5,
+            col.bars=c(colorlist[[KD]],"firebrick1"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote(.(text1)~'('*.(PSEAlist[[paste0(KD,"fr_EP.all")]][paste0("up.FC1"),"NGenes"])*')'), adj = c(1,.3),cex=0.5)
+text(5,2.8,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(KD,"fr_EP.all")]][paste0("up.FC1"),"FDR"])*'('*.(PSEAlist[[paste0(KD,"fr_EP.all")]][paste0("up.FC1"),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote(.(text2)~'('*.(PSEAlist[[paste0(KD,"fr_EP.all")]][paste0("down.FC1"),"NGenes"])*')'), adj = c(0,.5),cex=0.5)
+text(-5,-2.8,bquote(italic(P)[adj.]*"<"*.(PSEAlist[[paste0(KD,"fr_EP.all")]][paste0("down.FC1"),"FDR"])*'('*.(PSEAlist[[paste0(KD,"fr_EP.all")]][paste0("down.FC1"),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+```
+
+
