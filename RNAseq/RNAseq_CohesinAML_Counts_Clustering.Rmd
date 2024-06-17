@@ -1,0 +1,279 @@
+---
+title: "RNAseq Cohesin AML generation of counts and clustering"
+author: "Alexander Fischer"
+date: "13 07 2021"
+output: html_document
+---
+#rbioc_3-12
+# Loading libraries needed for data processing and analysis
+```{r, echo = FALSE, include = FALSE}
+library(edgeR)
+library(GGally)
+library(ggplot2)
+library(ggrepel)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(ggpubr)
+library(Rtsne)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(pheatmap)
+library(cowplot)
+
+```
+# Defining path variables at the start
+```{r}
+DIR_DATA="/misc/data"
+RAWDATAQC=file.path(DIR_DATA,"rawData/RNA/Cohesin_AML/FastQC")#directory with multiQC report
+MAPPINGQC=file.path(DIR_DATA,"processedData/mapping/RNA/GRCh38/RNAseq/Cohesin_AML/logs") #directory with STAR log files
+WORKDIRAML=file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/RNAseq")
+METADIR=file.path(WORKDIRAML,"Metadata") #input direcotry should contain the metadata files
+RPGDIR=file.path(DIR_DATA,"processedData/mapping/RNA/GRCh38/RNAseq/Cohesin_AML") #input directory with the .txt files containing the reads per gene information
+ANALDIR=file.path(WORKDIRAML,"Analysis/Resulttables") #output of analysis results
+FIGDIR=file.path(WORKDIRAML,"Analysis/Plots") #output of figure directories
+ANALn="RNAseq_Cohesin_AML_AF3" #Name the particular analysis you are about to conduct
+#this is the path to the ShortTranscriptID for a fully functional annotation of the RCT
+STIDp="/misc/software/ngs/genome/sequence/GRCh38.PRI_p10/STAR_transcriptIDshort.txt" 
+```
+
+# Create directories for respective analysis
+```{r}
+#dir.create(file.path(ANALDIR))
+#dir.create(FIGDIR)
+dir.create(file.path(ANALDIR,ANALn))
+dir.create(file.path(FIGDIR,ANALn))
+dir.create(file.path(FIGDIR,ANALn,"Clustering"))
+dir.create(file.path(FIGDIR,ANALn,"GSEA"))
+```
+
+
+# Reading in metadata
+```{r}
+#reading in the metadata file as a pilot
+metad<-read.table(file.path(METADIR, "RNAseq_Metadata_AML_STAG2_RAD21.txt"),sep = "\t",header=TRUE)
+head(metad)
+#consistency check
+dim(metad)
+```
+# check QC information and collect in file
+```{r}
+#add FastQC metrics to metad
+multiqcstats<-read.table(file.path(RAWDATAQC,"RNA_CohAML_multiQC_data/multiqc_general_stats.txt"),header=TRUE)
+metad_incQC<-metad
+metad_incQC$PercDup_R1<-0
+metad_incQC$PercDup_R2<-0
+metad_incQC$PercGC_R1<-0
+metad_incQC$PercGC_R2<-0
+metad_incQC$TotalSeq<-0
+metad_incQC$RawData_R1<-"nameR1"
+metad_incQC$RawData_R2<-"nameR2"
+for (n in metad_incQC$ID){
+metad_incQC[[metad_incQC$ID==n,"TotalSeq"]]<-multiqcstats[grep(n,multiqcstats$Sample),"FastQC_mqc.generalstats.fastqc.total_sequences"][1]
+metad_incQC[[metad_incQC$ID==n,"PercDup_R1"]]<-multiqcstats[grep(n,multiqcstats$Sample),"FastQC_mqc.generalstats.fastqc.percent_duplicates"][1]
+metad_incQC[[metad_incQC$ID==n,"PercDup_R2"]]<-multiqcstats[grep(n,multiqcstats$Sample),"FastQC_mqc.generalstats.fastqc.percent_duplicates"][2]
+metad_incQC[[metad_incQC$ID==n,"PercGC_R1"]]<-multiqcstats[grep(n,multiqcstats$Sample),"FastQC_mqc.generalstats.fastqc.percent_gc"][1]
+metad_incQC[[metad_incQC$ID==n,"PercGC_R2"]]<-multiqcstats[grep(n,multiqcstats$Sample),"FastQC_mqc.generalstats.fastqc.percent_gc"][2]
+metad_incQC[[metad_incQC$ID==n,"RawData_R1"]]<-paste0(multiqcstats[grep(n,multiqcstats$Sample),"Sample"][1],".fastq.gz")
+metad_incQC[[metad_incQC$ID==n,"RawData_R2"]]<-paste0(multiqcstats[grep(n,multiqcstats$Sample),"Sample"][2],".fastq.gz")
+}
+#add mapping metrics to metad
+MAPLOGLIST<-list()
+for (n in metad_incQC$Sample_Name){
+MAPLOGLIST[[n]]<-read.delim(file.path(MAPPINGQC,paste0(n,".trimmed.summary.log.txt")),header=FALSE)
+}
+metad_incQC$PercUniquelyMapped<-0
+metad_incQC$PercMultiMapped<-0
+metad_incQC$PercUnmapped<-0
+for (n in metad_incQC$Sample_Name){
+metad_incQC[[metad_incQC$Sample_Name==n,"PercUniquelyMapped"]]<-as.numeric(sub("%", "", MAPLOGLIST[[n]][9,"V2"]))
+metad_incQC[[metad_incQC$Sample_Name==n,"PercMultiMapped"]]<-as.numeric(sub("%", "", MAPLOGLIST[[n]][24,"V2"]))
+metad_incQC[[metad_incQC$Sample_Name==n,"PercUnmapped"]]<-sum(as.numeric(sub("%", "", MAPLOGLIST[[n]][28,"V2"])),as.numeric(sub("%", "", MAPLOGLIST[[n]][29,"V2"]))
+,as.numeric(sub("%", "", MAPLOGLIST[[n]][30,"V2"])))
+}
+write.table(metad_incQC,file=file.path(METADIR,"Metadata_RNAseq_cohesin_AML.inclQC.txt"),sep = "\t",col.names=TRUE, row.names=F,quote=FALSE)
+```
+
+
+# Read count table (RCT) assembly
+## get short transcript ID variable
+```{r}
+#character vector containing the short transcript ID with consistency check
+stid<-read.delim(STIDp,skip = 4,header = FALSE)[,1]
+#consistency check
+length(stid)
+head(stid)
+```
+## get reads per gene deposited in RPGDIR
+```{r}
+#reading in all file names using an input directory only containing the files of interest..the variable "reads per gene list"
+rpgl<-list.files(path = RPGDIR,pattern = "ReadsPerGene.txt",ignore.case = FALSE) #reading in the filenames as a list
+#rpgl_rm<-str_remove(rpgl,".ReadsPerGene.txt") # I kept this line as this is a per se sensible operation, despite not beeing necessary here
+length(rpgl) #this should be equal to the number of samples you want to analyse
+#a sorting vector according to RNAseq_ID, later this will preserve the order when matching metadata information
+sortvec<-sapply(as.character(metad$X...Name), function(x) grep(x,rpgl))
+sortvec
+length(sortvec)
+#character vector containing the short transcript ID
+#stid<-read.delim(STIDp,skip = 4,header = )
+#head(stid)
+
+#create an empty matrix as data frame, which can be written in in the following for-loop
+counts<-as.data.frame(matrix(),row.names = NULL)
+
+#in this forloop the read counts of the samples in the right order are extracted and appended to the counts data.frame #later, this should become a function
+for (i in sortvec) {
+rpgf<-read.delim(file.path(RPGDIR,rpgl[i]),sep = "\t",header = FALSE,check.names = TRUE,skip = 4,row.names = NULL)
+counts<-cbind(counts,rpgf[,4])
+}
+counts<-counts[,(-1)] #leaving out the empty column resulting from generating the "empty" matrix before the loop...this could probably be done more elegantly by using the function for i=1 as the "first" entry, making a function out of the forloop
+colnames(counts)<-metad$X...Name
+rownames(counts)<-stid
+ncol(counts) #all samples there?
+head(counts) #does it look like the read in RCTs assembled in bash?
+```
+## write output file for RCT
+```{r}
+write.table(counts,file=file.path(ANALDIR,ANALn,"RNAseq_AML_STAG2_RAD21_counts.raw.txt"),sep = "\t",col.names=TRUE, quote=FALSE) 
+counts<-read.table(file.path(WORKDIRAML,"RNAseq_AML_STAG2_RAD21_counts.raw.txt"),header=TRUE)
+```
+
+# variables for the DGElist object etc
+```{r}
+#define factors from metadata
+MutationGroup<-factor(as.character(metad$group),levels=c("CTRL","STAG2","RAD21")) #cave: level adjustment
+sex<-factor(as.character(metad$sex)) #no level adjustment necessary
+RUNX1mut<-factor(as.character(metad$RUNX1)) #no level adjustment necessary
+NPM1mut<-factor(as.character(metad$NPM1)) #no level adjustment necessary
+FLT3ITDmut<-factor(as.character(metad$FLT3_ITD)) #no level adjustment necessary
+RUNX1mut<-factor(as.character(metad$RUNX1)) #no level adjustment necessary
+#labels if to be shown in plots
+labelID<-factor(as.character(metad$plotID))
+
+#generate a genes datafram for the DGEList object
+genens<-strsplit2(rownames(counts),"$",fixed = TRUE)[,2] #extract gene names from the ShortTranscriptID containing the gene names
+genes.df<-as.data.frame(strsplit2(stid,"[$]"))
+colnames(genes.df)<-c("EnsemblID","GeneSymbol","Length","GeneType")
+genes.df$EnsemblID<-as.character(genes.df$EnsemblID)
+genes.df$GeneSymbol<-as.character(genes.df$GeneSymbol)
+genes.df$Length<-as.numeric(as.character(genes.df$Length)) 
+genes.df$GeneType<-as.character(genes.df$GeneType)
+head(genes.df)
+```
+
+
+# Generation and filtering of DGEList object including all patients
+```{r}
+dgel_all <- DGEList(counts = counts, group = MutationGroup, genes = genes.df)
+keep <- rowSums(cpm(dgel_all)>1) >= 3  #transcripts present in more than 3 patients with a cpm of at least 1
+dgel_all <- dgel_all[keep, , keep.lib.sizes=FALSE]
+dgel_all <- calcNormFactors(dgel_all)
+summary(keep)
+dgel_all$samples
+```
+
+# Generation of normalized counts cpm/rpkm
+```{r}
+d.log.cpm <- cpm(dgel_all, prior.count = 2, log = TRUE) #log-transformed cpms
+d.log.rpkm <- rpkm(dgel_all, prior.count = 2, normalized.lib.sizes = TRUE, log = TRUE) #log-transformed rpkms
+#save output
+write.table(d.log.cpm, file = file.path(ANALDIR,ANALn,"RNAseq_AML_CTRL_STAG2mut_RAD21mut_log.cpm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+write.table(d.log.rpkm, file = file.path(ANALDIR,ANALn,"RNAseq_AML_CTRL_STAG2mut_RAD21mut_log.rpkm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+```
+
+
+
+
+# Clustering analysis
+
+## define umap function
+```{r}
+##define a umap function showing NPM1 RUNX1 as hapes and FLT3ITD as outline
+umapfunc<-function(data,seed=42,legpos="right",pchsize=rel(8),labels=""){
+set.seed(seed = seed)
+  #appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(data)))
+  umap.dat<-data.frame(umap.dat$layout)
+  ##add cohesin-group and co-mutation info for visualizing
+  umap.dat$group<-MutationGroup
+  umap.dat$NPM1mut<-NPM1mut
+  umap.dat$RUNX1mut<-RUNX1mut
+  umap.dat$ASXL1mut<-ASXL1mut
+  umap.dat$SRSF2mut<-SRSF2mut
+  umap.dat$flt3itd<-FLT3ITDmut
+  umap.dat$flt3itd<-factor(umap.dat$flt3itd,levels=c("pos", "neg"))
+  umap.dat$SRSF2mutASXL1mut<-paste0(umap.dat$SRSF2mut,umap.dat$ASXL1mut)
+  umap.dat$NPM1mutRUNX1mut<-paste0(umap.dat$NPM1mut,umap.dat$RUNX1mut)
+  umap.dat$NPM1mutRUNX1mut<-factor(umap.dat$NPM1mutRUNX1mut,levels=c("posneg", "negpos","negneg"))
+  umap.dat$NPM1mutASXL1mut<-paste0(umap.dat$NPM1mut,umap.dat$ASXL1mut)
+  umap.dat$NPM1mutRUNX1mutSRSF2mutASXL1mut<-paste0(umap.dat$NPM1mutRUNX1mut,umap.dat$SRSF2mutASXL1mut)
+  umap.dat$NPM1mutRUNX1mutSRSF2mutASXL1mut<-factor(umap.dat$NPM1mutRUNX1mutSRSF2mutASXL1mut,levels=c("posnegnegneg", "negnegnegneg","negnegposneg","negnegpospos","negposnegneg","negpospospos"))
+ umap.p<-ggplot(data =umap.dat)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-3,3)) +
+    scale_y_continuous(limits = c(-3,3))+    
+    geom_point(size=pchsize,aes(fill=group,colour=flt3itd,shape=NPM1mutRUNX1mut,stroke = flt3itd))+
+    scale_fill_manual(values = c("CTRL" = "firebrick", "STAG2" = "seagreen", "RAD21" = "mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut"),name="Cohesin status") +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "azure3"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 0),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1mut","RUNX1mut","none shown")) +
+    geom_text_repel(aes(label=labels),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = paste0("UMAP: RNAseq AML seed", seed))+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(1.4), face = "plain", hjust = 0.5),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(1.2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(1.2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(1.5), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = legpos,legend.background = element_rect(fill = "transparent"),legend.box.background = element_rect(colour = "darkgrey")
+        )
+}  
+```
+             
+## run umap function on rpkms
+```{r}
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAP_RNA_rpkm_STAG2_RAD21pat.nolab.pdf"),height = 8,width = 12)
+plot(umapfunc(data=d.log.rpkm,seed=58,labels="",pchsize=rel(8)))
+dev.off()
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAP_RNA_rpkm_STAG2_RAD21pat.lab.pdf"),height = 8,width = 12)
+plot(umapfunc(data=d.log.rpkm,seed=58,labels=labelID,pchsize=rel(8)))
+dev.off()
+
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAP_RNA_rpkm_STAG2_RAD21pat.nolab.2.pdf"),height = 8,width = 12)
+plot(umapfunc(data=d.log.rpkm,seed=101,labels="",pchsize=rel(8)))
+dev.off()
+
+
+
+plot(umapfunc(data=d.log.rpkm,seed=58,labels="",pchsize=rel(8)))
+```
+
+#"seed farming" apply multiple seeds and plot in one pdf for visual review
+#for log rpkm
+umapsRPKM = lapply(c(1:100), umapfunc,data=d.log.rpkm,legpos="none",pchsize=5,labels="")
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAPs_RNA_rpkm_STAG2_RAD21pat.nolab.seed.1-100.pdf"),height = 100,width = 20)
+grid.arrange(grobs=umapsRPKM,ncol=4,top="UMAP seeds 1-100") 
+dev.off()
+umapsRPKM2 = lapply(c(100:200), umapfunc,data=d.log.rpkm,legpos="none",pchsize=4,labels="")
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAPs_RNA_rpkm_STAG2_RAD21pat.nolab.seed.100-200.pdf"),height = 100,width = 20)
+grid.arrange(grobs=umapsRPKM2,ncol=4,top="UMAP seeds 100-200") 
+dev.off()
+holynumbers<-c(42,53,58,72,81,420,123,1234,12345,222,444,333,666,1000,2000,3000) #special numbers commonly used as seed
+umapsRPKM3 = lapply(holynumbers, umapfunc,data=d.log.rpkm,legpos="none",pchsize=5,labels="")
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAPs_RNA_rpkm_STAG2_RAD21pat.nolab.seed.special.pdf"),height = 25,width = 20)
+grid.arrange(grobs=umapsRPKM3,ncol=4,top="UMAP seeds special numbers") #none is really good
+dev.off()

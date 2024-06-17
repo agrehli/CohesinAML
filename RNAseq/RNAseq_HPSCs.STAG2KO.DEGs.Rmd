@@ -1,0 +1,417 @@
+---
+title: "RNAseq CD34_HSPCs_SA2KO_CRISPR_d14"
+author: "Alexander Fischer"
+date: "20 05 2020"
+output: html_document
+---
+###rbioc_3-12
+# Loading libraries needed for data processing and analysis
+```{r, echo = FALSE, include = FALSE}
+library(edgeR)
+library(GGally)
+library(ggplot2)
+library(ggrepel)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(Rtsne)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(hexbin)
+library(plyr)
+library(pheatmap)
+library(gridExtra)
+```
+# Defining path variables at the start
+```{r}
+DIR_DAT<-"/misc/data"
+PROJDIR<-file.path(DIR_DAT,"analysis/project_cohesin")
+WORKDIR<-file.path(PROJDIR,"CD34/CRISPR/RNAseq") #main input/output directory
+RPGDIR<-file.path(WORKDIR,"ReadsPerGene") #input directory with the .txt files containing the reads per gene information
+ANALDIR<-file.path(WORKDIR,"Analysis") #output of analysis results
+FIGDIR<-file.path(WORKDIR,"Plots") #output of figure directories
+
+ANALn="RNAseq_HSPCs_SA2KO_d14" #Name the particular analysis
+#path to the ShortTranscriptID for a fully functional annotation
+STIDp="/misc/software/ngs/genome/sequence/GRCh38.PRI_p10/STAR_transcriptIDshort.txt" 
+
+##Directory for external Datasets for Comparisons
+ANALDIRAML<-file.path(PROJDIR,"Cohesin_AML/RNAseq/Analysis/Resulttables/RNAseq_Cohesin_AML_AF3")
+DIRKDs<-file.path(PROJDIR,"CD34/RNAseq/Analysis/Plots/RNAseq_CD34_CohesinKD")
+#new dirs
+dir.create(ANALDIR)
+dir.create(file.path(ANALDIR,ANALn))
+dir.create(file.path(FIGDIR,ANALn))
+dir.create(file.path(FIGDIR,ANALn,"Clustering"))
+dir.create(file.path(FIGDIR,ANALn,"GSEA"))
+```
+
+# Reading in metadata
+```{r}
+#reading in the metadCRISPata file as a pilot
+metadCRISP<-read.table(file=file.path(WORKDIR,"Metadata_RNAseq_HSPCs_STAG2_KO_d14.txt"),sep = "\t",header=TRUE)
+metadCRISP
+#consistency check
+dim(metadCRISP)
+```
+
+# RCT Assembly in R
+## generating short transcript ID variable
+```{r}
+#character vector containing the short transcript ID with consistency check
+stid<-read.delim(STIDp,skip = 4,header = FALSE)[,1]
+#consistency check
+length(stid)
+head(stid)
+```
+## get reads per gene deposited in RPGDIR
+```{r}
+#reading in all file names using an input directory only containing the files of interest..the variable "reads per gene list"
+rpgl<-list.files(path = RPGDIR,pattern = "RNA_",ignore.case = FALSE) #reading in the filenames as a list
+length(rpgl) #this should be equal to the number of samples you want to analyse
+#a sorting vector according to RNAseq_ID
+sortvec<-sapply(as.character(metadCRISP$SampleID), function(x) grep(x,rpgl))
+sortvec
+length(sortvec)
+#create an empty matrix as data frame, which can be written in in the following for-loop
+counts<-as.data.frame(matrix(),row.names = NULL)
+#in this forloop the read counts of the samples in the right order are extracted and appended to the counts data.frame
+for (i in sortvec) {
+rpgf<-read.delim(file.path(RPGDIR,rpgl[i]),sep = "\t",header = FALSE,check.names = TRUE,skip = 4,row.names = NULL)
+counts<-cbind(counts,rpgf[,4])
+}
+counts<-counts[,(-1)] #leaving out the empty column
+colnames(counts)<-metadCRISP$SampleID
+rownames(counts)<-stid
+ncol(counts) #all samples there?
+#write output
+write.table(counts,file=file.path(ANALDIR,ANALn,"RNAseq_HSPCs_STAG2_KO_d14_counts_raw.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+counts<-read.table(file=file.path(ANALDIR,ANALn,"RNAseq_HSPCs_STAG2_KO_d14_counts_raw.txt"),sep = "\t",header=TRUE) 
+```
+
+# Define group Variables
+```{r}
+#define factors
+Treatment<-factor(as.character(metadCRISP$Treatment),levels=c("ctrl","SA2_KO")) #cave: level adjustment
+timepoint<-factor(as.character(metadCRISP$timepoint))
+CRISPRefficency<-factor(metadCRISP$CRISPRESSOpercMut)
+donor<-factor(as.character(metadCRISP$donor))
+plot_ID<-factor((metadCRISP$plot_ID), levels=c("21_ctrl_d14","21_SA2_KO_d14","27_ctrl_d14","27_SA2_KO_d14","28_ctrl_d14","28_SA2_KO_d14","29_ctrl_d14","29_SA2_KO_d14","31_ctrl_d14","31_SA2_KO_d14"))
+#combination of treatment and timepoint
+metadCRISP$tpTreat<-factor(paste0("d",metadCRISP$timepoint,"_",metadCRISP$Treatment),levels = c("d14_ctrl","d14_SA2_KO"))
+tpTreat<-metadCRISP$tpTreat
+#Create a genes data frame to add to the dglist object
+genes.df<-as.data.frame(strsplit2(stid,"[$]"))
+colnames(genes.df)<-c("EnsemblID","GeneSymbol","Length","GeneType")
+genes.df$EnsemblID<-as.character(genes.df$EnsemblID)
+genes.df$GeneSymbol<-as.character(genes.df$GeneSymbol)
+genes.df$Length<-as.numeric(as.character(genes.df$Length))
+genes.df$GeneType<-as.character(genes.df$GeneType)
+head(genes.df)
+```
+
+
+# Generation and filtering of dgelist object
+```{r}
+dgelCRISP <- DGEList(counts = counts, group = tpTreat, genes = genes.df)
+keep <- rowSums(cpm(dgelCRISP)>1) >= 3 
+dgelCRISP <- dgelCRISP[keep, , keep.lib.sizes=FALSE]
+dgelCRISP <- calcNormFactors(dgelCRISP)
+summary(keep)
+dgelCRISP$samples
+```
+
+# Genereation of normalized counts
+### cpm, log.cpm generation,Zscore transformation
+```{r}
+d.raw.cpm_d14 <- cpm(dgelCRISP, normalized.lib.sizes = TRUE) #non-log-transformed cpms
+d.log.cpm_d14 <- cpm(dgelCRISP, prior.count = 2, log = TRUE) #log-transformed cpms
+d.log.rpkm_d14 <- rpkm(dgelCRISP, prior.count = 2, normalized.lib.sizes = TRUE, log = TRUE)
+#batch correction
+design_plots <- model.matrix(~0+tpTreat) #design for batch removal, only use for plots not for DEG analysis!
+d.corr.log.cpm_d14<-removeBatchEffect(d.log.cpm_d14,batch=donor,design=design_plots)
+d.corr.log.rpkm_d14<-removeBatchEffect(d.log.rpkm_d14,batch=donor,design=design_plots)
+#Zscore transformation of batch corrected log cpms
+d.corr.log.cpm_d14.scaled.transposed<-(scale(t(d.corr.log.cpm_d14)))
+d.corr.log.cpm_d14.scaled<-data.matrix(t(d.corr.log.cpm_d14.scaled.transposed))
+
+write.table(d.corr.log.cpm_d14,file=file.path(ANALDIR,ANALn,"RNAseq_HSPCs_STAG2_KO_d14_log.cpm.batchcorr.donor.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+write.table(d.corr.log.rpkm_d14,file=file.path(ANALDIR,ANALn,"RNAseq_HSPCs_STAG2_KO_d14_log.rpkm.batchcorr.donor.txt"),sep = "\t",col.names=TRUE, quote=FALSE) 
+```
+
+# Clustering
+## Function for UMAP
+```{r}
+#set seed for reproducibility
+umapfunc<-function(data,labels="",pchsize=rel(8),seedval=42,groupvec=Treatment,secondary=timepoint,NN=15,legpos="right"){
+  set.seed(seed = seedval)
+  #appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(data)),n_neighbors=NN)
+  umap.dat<-data.frame(umap.dat$layout)
+  umap.dat$group <- factor(groupvec,levels=c("ctrl","SA2_KO"))
+  umap.dat$timepoint <- as.factor(secondary)
+umap.p<-ggplot(data = umap.dat)+
+    aes(x = X1, y = X2)+
+geom_point(size=pchsize, aes(colour=group,shape=timepoint)) + 
+   scale_color_manual(values = c("ctrl" = "firebrick1","SA2_KO" = "steelblue"),
+   name="Treatment",
+    labels=c("CTRL-gRNA","STAG2 KO")
+   ) +
+    scale_shape_manual(values = c("14"=17), 
+    name="timpeoint",) +
+    geom_text_repel(aes(label=labels),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50,show.legend = FALSE) +
+    ggtitle("UMAP RNAseq") + theme_light(base_size=16) +
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = rel(2.4), face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = rel(1.2), face = "plain"),
+          legend.title = element_text(colour="black", size = rel(1.2), face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = rel(1.5), face = "plain"),
+          axis.title = element_text(colour = "black",size = rel(2),face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black"),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = legpos
+        )
+plot(umap.p)        
+}
+```
+## Function for PCA
+```{r}
+PCAfunc<-function(data,labels="",groupvec=Treatment,secondaryvec=timepoint){
+prin_comp.d <- prcomp(data, scale. = FALSE)
+  std_dev.d <- prin_comp.d$sdev 
+  pr_var.d <- std_dev.d^2
+  prop_varex.d <- round(100*pr_var.d/sum(pr_var.d), digits=1)
+  prop_varex.d
+  embedding <- as.data.frame(prin_comp.d$rotation)
+  embedding$group <- as.factor(groupvec)
+  embedding$timepoint <- as.factor(secondaryvec)
+  PCA1 <- ggplot(embedding, aes(x=PC1, y=PC2)) +
+   geom_point(size=6, aes(colour=group,shape=timepoint)) + 
+   scale_color_manual(values = c("ctrl" = "firebrick1","SA2_KO" = "steelblue"),
+   name="Treatment",
+    labels=c("CTRL-gRNA","STAG2 KO")
+   ) +
+    scale_shape_manual(values = c("14"=17), 
+    name="timpoint",) +
+    geom_text_repel(aes(label=labels),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50,show.legend = FALSE) +
+    ggtitle("Principal Component Analysis") + theme_light(base_size=16) +
+    xlab(paste("PC2: ",prop_varex.d[2],"% of variance")) + ylab(paste("PC1: ",prop_varex.d[1],"% of variance")) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = 12, face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = 12, face = "plain"),
+          legend.title = element_text(colour="black", size = 12, face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = 12, face = "plain"),
+          axis.title = element_text(colour = "black",size = 12,face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black"),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+}
+```
+## plot PCA and umap
+```{r}
+##PCA non-corr counts
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","PCA_cpm.HSPCs.SA2KO.d14.pdf"),height = 8,width = 7)
+plot(PCAfunc(d.log.cpm_d14,labels=plot_ID))
+dev.off()
+plot(PCAfunc(d.log.cpm_d14,labels=plot_ID))
+##PCA with batch corr counts ("wBC")
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","PCA_cpm.wBC.HSPCs.SA2KO.d14.pdf"),height = 8,width = 7)
+plot(PCAfunc(d.corr.log.cpm_d14,labels=plot_ID))
+dev.off()
+plot(PCAfunc(d.corr.log.cpm_d14,labels=plot_ID))
+##UMAP with batch corr counts ("wBC")
+pdf(file = file.path(FIGDIR,ANALn,"Clustering","UMAP_cpm.wBC.HSPCs.SA2KO.d14.pdf"),height = 8,width = 7)
+umapfunc(d.corr.log.cpm_d14,NN=10,legpos="bottom")
+dev.off()
+umapfunc(d.corr.log.cpm_d14,NN=10,legpos="bottom")
+```
+
+# DEG analysis
+### Calculate dispersion and fit the model for design
+```{r}
+#design for DEG analysis incl donor
+design_DEGs_d14 <- model.matrix(~0+tpTreat+donor)
+
+#estimate dispersion
+dgelCRISP<- estimateDisp(dgelCRISP,design_DEGs_d14,robust = TRUE)
+dgelCRISP$common.dispersion #Output: 0.009639036
+
+#Visualize dispersion
+pdf(file = file.path(FIGDIR,ANALn,"dipersion.BCV.plot.SA2KOvsCTRL.d14.pdf"),height = 7,width = 10)
+plotBCV(dgelCRISP)
+dev.off()
+
+#Fitting genewise glms
+f8<-glmQLFit(dgelCRISP,design_DEGs_d14)
+```
+## qlf test
+```{r}
+#comparison KO vs CTRL
+reslist2<-list()
+i <- c("d14")
+comppair<- paste0(paste0("tpTreat",i,"_SA2_KO-"),paste0("tpTreat",i,"_ctrl")) 
+reslist2[[paste0("con",i)]]<-makeContrasts(comppair, levels = design_DEGs_d14)
+reslist2[[paste0("qlf_",i)]]<-glmQLFTest(f8,contrast = reslist2[[paste0("con",i)]])
+reslist2[[paste0("qstat_",i)]]<-topTags(reslist2[[paste0("qlf_",i)]], n = Inf)
+sumDEG <- summary(qdt <- decideTestsDGE(reslist2[[paste0("qlf_",i)]])) 
+write.table(sumDEG, file = file.path(ANALDIR,ANALn,paste0(i,".SA2KOvsCTRL.sumDEG.d14.txt")), sep = "\t", col.names=NA, quote=FALSE)
+write.table(reslist2[[paste0("qstat_",i)]], file = file.path(ANALDIR,ANALn,paste0("qstat.",i,".SA2KOvsCTRL.d14.glm.txt")), sep = "\t", col.names=NA, quote=FALSE)
+```
+### Sorting of qstat results table
+```{r}
+i <- c("d14")
+df<-data.frame(reslist2[[paste0("qstat_",i)]])  
+reslist2[[paste0("qstat_",i)]]<-df[order(df$FDR, decreasing = FALSE), ]
+reslist2[[paste0("DEGs_FC2up.",i)]]<-subset(df,logFC>1 & logCPM >1 & FDR<0.05)
+reslist2[[paste0("DEGs_FC2down.",i)]]<-subset(df,logFC<(-1) & FDR <0.05 & logCPM>1)
+reslist2[[paste0("DEGs_FC1.5up.",i)]]<-subset(df,logFC>(0.585) & FDR <0.05 & logCPM>1)
+reslist2[[paste0("DEGs_FC1.5down.",i)]]<-subset(df,logFC<(-0.585) & FDR <0.05 & logCPM>1)
+reslist2[[paste0("DEGs_FC1.5up.nocpmfilt",i)]]<-subset(df,logFC>(0.585) & FDR <0.05)
+reslist2[[paste0("DEGs_FC1.5down.nocpmfilt",i)]]<-subset(df,logFC<(-0.585) & FDR <0.05)
+
+##summarize
+DEGstats2=data.frame()
+i <- c("d14")
+  DEGstats2["DEGs_FC2up",i]<-nrow(reslist2[[paste0("DEGs_FC2up.",i)]])
+  DEGstats2["DEGs_FC2down",i]<-nrow(reslist2[[paste0("DEGs_FC2down.",i)]])
+  DEGstats2["DEGs_FC1.5up",i]<-nrow(reslist2[[paste0("DEGs_FC1.5up.",i)]])
+  DEGstats2["DEGs_FC1.5down",i]<-nrow(reslist2[[paste0("DEGs_FC1.5down.",i)]])
+  DEGstats2["DEGs_FC1.5up.nocpmfilt",i]<-nrow(reslist2[[paste0("DEGs_FC1.5up.nocpmfilt",i)]])
+  DEGstats2["DEGs_FC1.5down.nocpmfilt",i]<-nrow(reslist2[[paste0("DEGs_FC1.5down.nocpmfilt",i)]])
+DEGstats2
+#                          d14
+#DEGs_FC2up               108
+#DEGs_FC2down             313
+#DEGs_FC1.5up             399
+#DEGs_FC1.5down           738
+#DEGs_FC1.5up.nocpmfilt   492
+#DEGs_FC1.5down.nocpmfilt 892
+```
+ 
+# volcano plot
+```{r}
+dir.create(file.path(FIGDIR,ANALn,"Volcanoplots"))
+####Sorting of qstat results table and defining colouring categories
+i <- c("d14")
+#use qstat list to prepare data for volcano plot
+  #order and filter data by FDR and create new dfs sorted by logFC decreasing or increasing
+  reslist2[[paste0("qstat_",i,"vs.CTRL.FDR_filt")]]<-filter(reslist2[[paste0("qstat_",i)]],(logFC>(1)| logFC<(-1))& FDR <0.05)
+  reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCdec_FDR_filt")]]<-reslist2[[paste0("qstat_",i,"vs.CTRL.FDR_filt")]][order(reslist2[[paste0("qstat_",i,"vs.CTRL.FDR_filt")]]$logFC, decreasing = TRUE), ]
+  reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCinc_FDR_filt")]]<-reslist2[[paste0("qstat_",i,"vs.CTRL.FDR_filt")]][order(reslist2[[paste0("qstat_",i,"vs.CTRL.FDR_filt")]]$logFC, decreasing = FALSE), ]
+  #assign up / down / not sig categories in new column 
+  reslist2[[paste0("qstat_",i)]]$Volccolor<- "NA"
+  reslist2[[paste0("qstat_",i)]]$Volccolor[reslist2[[paste0("qstat_",i)]]$logFC < -0.585] <- "down" 
+  reslist2[[paste0("qstat_",i)]]$Volccolor[reslist2[[paste0("qstat_",i)]]$logFC > 0.585] <- "up" 
+  reslist2[[paste0("qstat_",i)]]$Volccolor[reslist2[[paste0("qstat_",i)]]$Volccolor=="NA"] <- "notsig"
+  reslist2[[paste0("qstat_",i)]]$Volccolor[reslist2[[paste0("qstat_",i)]]$FDR>0.05] <- "notsig"
+
+#add desired colors for upregulated genes depending on KD to list
+reslist2[["UPcolor.d14vs.CTRL"]]<-c("aquamarine4")
+
+pdf(file = file.path(FIGDIR,ANALn,"Volcanoplots",paste0("Volcano_",i,"KO.vs.CTRL.topGenes.pdf")), width = 6, height = 6)
+ggplot()+
+  geom_point(data=reslist2[[paste0("qstat_",i)]], aes(x=logFC, y=-log10(FDR), colour=Volccolor)) +
+  scale_color_manual(values = c("notsig" = "darkgrey", "up" = reslist2[[paste0("UPcolor.",i,"vs.CTRL")]], "down" = "firebrick1")) +
+  ggtitle(paste0(i," SA2 KO vs. CTRL-HSPCs (d14)")) +
+  xlab("log2 fold change") +
+  ylab("-log10 FDR") +
+  #scale_x_continuous(limits = c(-4,4)) +
+  #scale_y_continuous(limits = c(0,6))+    
+  theme(legend.position = "none",
+        plot.background = element_rect(fill="white",colour = "white",linetype = 3),
+        panel.background = element_rect(fill = "white",color = "black"),
+        panel.border = element_rect(fill = NA, colour = "black",size=2),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',colour = NULL),
+        panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',colour = NULL),
+        plot.title = element_text(size = rel(2.4), hjust = 0.5),axis.text = element_text(colour = "black", size = rel(1.5), face = "plain"),
+        axis.title = element_text(size = rel(2)))+
+geom_text_repel(aes(x = reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCinc_FDR_filt")]]$logFC[1:10], y = -log10(reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCinc_FDR_filt")]]$FDR[1:10])), data =    head(reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCinc_FDR_filt")]], 10), label = reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCinc_FDR_filt")]]$GeneSymbol[1:10],cex=5,max.overlaps=30,min.segment.length=0) +
+geom_text_repel(aes(x = reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCdec_FDR_filt")]]$logFC[1:10], y = -log10(reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCdec_FDR_filt")]]$FDR[1:10])), data =    head(reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCdec_FDR_filt")]], 10), label = reslist2[[paste0("qstat_",i,"vs.CTRL_ordered_FCdec_FDR_filt")]]$GeneSymbol[1:10],cex=5,max.overlaps=30,min.segment.length=0) +
+geom_text_repel(aes(x = reslist2[[paste0("qstat_",i)]]$logFC[1:10], y = -log10(reslist2[[paste0("qstat_",i)]]$FDR[1:10])), data =    head(reslist2[[paste0("qstat_",i)]], 10), label = reslist2[[paste0("qstat_",i)]]$GeneSymbol[1:10],cex=5,max.overlaps=30,min.segment.length=0) +
+       geom_vline(xintercept = -0.585, linetype = 'dashed') +  geom_vline(xintercept = 0.585,linetype = 'dashed') +
+       geom_hline(yintercept = -log10(0.05),linetype = 'dashed')
+dev.off()
+
+```
+
+
+# GSEA fry: Cohesin mut AML signaure genes
+## reading and filtering of input genelists for GSEA analyses
+```{r}
+########Read
+#SA2mut AML specific (SA2mut vs CTRL AMLs)
+listSA2mut2<-read.table(file.path(ANALDIRAML,"STAG2pat_vs_CTRL/qstat_STAG2.vs.CTRL.glm.txt"), header=T, sep="\t",row.names=1)
+#RAD21mut AML specific (RAD21mut vs CTRL AMLs)
+listRAD21mut2<-read.table(file.path(ANALDIRAML,"RAD21pat_vs_CTRL/qstat_RAD21.vs.CTRL.glm.txt"), header=T, sep="\t",row.names=1)
+
+########Filter
+##subset SA2 AML
+genelist_SA2mut_UP2 <- subset(listSA2mut2,(logFC > .585 & FDR < 0.05 & logCPM > 1)) #439   
+genelist_SA2mut_DOWN2 <- subset(listSA2mut2,(logFC < -.585 & FDR < 0.05 & logCPM > 1)) #212
+##subset RAD21 AML (less stringent criteria)
+genelist_RAD21mut_UP2 <- subset(listRAD21mut2,(logFC > .385 & FDR < 0.05)) #65  
+genelist_RAD21mut_DOWN2 <- subset(listRAD21mut2,(logFC < -.385 & FDR < 0.05)) #12
+```
+
+## set indices for genesets
+```{r}
+#SA2mut AML specific (SA2mut vs CTRL AMLs)
+###subset SA2 AML
+indSA2mut_UP2 <- rownames(f8) %in% rownames(genelist_SA2mut_UP2)
+indSA2mut_DOWN2 <- rownames(f8) %in% rownames(genelist_SA2mut_DOWN2)
+indSA2mut<-list(indSA2mut_UP2,indSA2mut_DOWN2)
+names(indSA2mut) <- c("SA2mut_up","SA2mut_down")
+#RAD21mut AML specific (RAD21mut vs CTRL AMLs)
+###subset RAD21 AML
+indRAD21mut_UP2 <- rownames(f8) %in% rownames(genelist_RAD21mut_UP2)
+indRAD21mut_DOWN2 <- rownames(f8) %in% rownames(genelist_RAD21mut_DOWN2)
+indRAD21mut<-list(indRAD21mut_UP2,indRAD21mut_DOWN2)
+names(indRAD21mut) <- c("RAD21mut_up","RAD21mut_down")
+```
+
+## use limma fry on indices
+```{r}
+###fry and save in list
+selfdef_sigs<-list(indSA2mut,indRAD21mut)
+names(selfdef_sigs)<-c("SA2mut","RAD21mut")
+GSEAlist_SA2KO<-list()
+for (sig in names(selfdef_sigs)){
+GSEAlist_SA2KO[[paste0("SA2KOd14",sig)]]<- fry(dgelCRISP, index=selfdef_sigs[[sig]], design=design_DEGs_d14, contrast=reslist2[["cond14"]])
+}
+```
+
+## visualize SA2mut signature in barcodplot
+```{r}
+resd14<-reslist2[["qlf_d14"]]
+frSA2KO_SA2mut_d14<-GSEAlist_SA2KO[[paste0("SA2KOd14","SA2mut")]]
+pdf(file=file.path(FIGDIR,ANALn,"GSEA","GSEA_SA2mutAMLsignature_SA2KOd14.pdf"),width=4,height=5)
+barcodeplot(resd14$table$logFC, 
+            index=indSA2mut_UP2, 
+            index2=indSA2mut_DOWN2, 
+            labels=c("CTRLd14","SA2KOd14"), 
+            xlab = bquote(log[2]*"FC in RNAseq"), 
+            main="SA2KO d14: expression of SA2mut AML specific genes", 
+            col.bars=c("aquamarine4", "brown4"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(2.5,5,bquote('green bars: genes upregulated in SA2mut AML '~'('*.(frSA2KO_SA2mut_d14["UpSA2mut","NGenes"])*')'), adj = c(1,.5),cex=0.6)
+text(0.5,4.5,bquote(italic(P)[adj.]*"<"*.(frSA2KO_SA2mut_d14["UpSA2mut","FDR"])*'('*.(frSA2KO_SA2mut_d14["UpSA2mut","Direction"])*')'), adj = c(1,.5),cex=1)
+text(-3,-5,bquote('red bars: genes downregulated in SA2mut AML  '~'('*.(frSA2KO_SA2mut_d14["DownSA2mut","NGenes"])*')'), adj = c(0,.5),cex=0.6)
+text(-2,-4.5,bquote(italic(P)[adj.]*"<"*.(frSA2KO_SA2mut_d14["DownSA2mut","FDR"])*'('*.(frSA2KO_SA2mut_d14["DownSA2mut","Direction"])*')'), adj = c(0,.5),cex=1)
+dev.off()
+```

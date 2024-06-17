@@ -1,0 +1,549 @@
+---
+title: "RNAseq Cohesin AML STAG2mut RAD21mut DEGs"
+author: "Alexander Fischer"
+date: "13 07 2021"
+output: html_document
+---
+
+# Loading libraries needed for data processing and analysis
+```{r, echo = FALSE, include = FALSE}
+library(edgeR)
+library(GGally)
+library(ggplot2)
+library(ggrepel)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(ggpubr)
+library(Rtsne)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(pheatmap)
+library(cowplot)
+```
+# Defining path variables at the start
+```{r}
+DIR_DATA="/misc/data"
+PROJDIR=file.path(DIR_DATA,"analysis/project_cohesin")
+WORKDIRAML=file.path(PROJDIR,"Cohesin_AML/RNAseq")
+METADIR=file.path(WORKDIRAML,"Metadata") #input direcotry should contain the metadata files
+RPGDIR=file.path(DIR_DATA,"processedData/mapping/RNA/GRCh38/RNAseq/Cohesin_AML") #input directory with the .txt files containing the reads per gene information
+ANALDIR=file.path(WORKDIRAML,"Analysis/Resulttables") #output of analysis results
+FIGDIR=file.path(WORKDIRAML,"Analysis/Plots") #output of figure directories
+ANALn="RNAseq_Cohesin_AML_AF3" #Name the particular analysis you are about to conduct
+STIDp="/misc/software/ngs/genome/sequence/GRCh38.PRI_p10/STAR_transcriptIDshort.txt" #this is the path to the ShortTranscriptID for a fully functional annotation of the RCT
+```
+
+# Reading in metadata and counts
+```{r}
+#reading in the metadata file as a pilot
+metad<-read.table(file.path(METADIR, "RNAseq_Metadata_AML_STAG2_RAD21.txt"),sep = "\t",header=TRUE)
+counts<-read.table(file.path(WORKDIRAML,"RNAseq_AML_STAG2_RAD21_counts.raw.txt"),header=TRUE)
+```
+
+################################################ STAG2mut vs CTRL ################################################ 
+# select patient subsets: STAG2 pat + CTRL pat only
+```{r}
+#select only STAG2 patients and all CTRLs
+STAG2pat<-colnames(as.matrix(select(as.data.frame(counts), matches('STAG2|_CTRL'))))
+#subset counts
+counts_selSTAG2<-counts[ , which(colnames(counts) %in% STAG2pat)]
+#subset metadata
+metad_selSTAG2<-subset(metad, Sample_Name %in% STAG2pat)
+#subset variables
+MutationGroup_STAG2pat<-factor(metad_selSTAG2$group,levels=c("STAG2","CTRL"))
+sex_sel<-factor(metad_selSTAG2$sex)
+RUNX1mut_sel<-factor(metad_selSTAG2$RUNX1)
+NPM1mut_sel<-factor(metad_selSTAG2$NPM1)
+FLT3ITDmut_sel<-factor(metad_selSTAG2$FLT3_ITD)
+dmut_sel<-factor(metad_selSTAG2$DNMT3A)
+
+#generate a genes datafram for the DGEList object
+genens<-strsplit2(rownames(counts),"$",fixed = TRUE)[,2] #extract gene names from the ShortTranscriptID containing the gene names
+genes.df<-as.data.frame(strsplit2(rownames(counts),"[$]"))
+colnames(genes.df)<-c("EnsemblID","GeneSymbol","Length","GeneType")
+genes.df$EnsemblID<-as.character(genes.df$EnsemblID)
+genes.df$GeneSymbol<-as.character(genes.df$GeneSymbol)
+genes.df$Length<-as.numeric(as.character(genes.df$Length)) 
+genes.df$GeneType<-as.character(genes.df$GeneType)
+head(genes.df)
+```
+
+
+# DEGs by MUTATION group: DEGs OF ALL STAG2 PATIENTS versus ALL CTRL AMLs
+## creating DGLIST object for STAG2 mut subset
+```{r}
+#creating DGLIST object for STAG2 subset
+dgel_selSTAG2 <- DGEList(counts = counts_selSTAG2, group = MutationGroup_STAG2pat, genes = genes.df)
+
+keep <- rowSums(cpm(dgel_selSTAG2)>1) >= 4 
+dgel_selSTAG2 <- dgel_selSTAG2[keep, , keep.lib.sizes=FALSE]
+dgel_selSTAG2 <- calcNormFactors(dgel_selSTAG2)
+summary(keep)
+#look at norm factors
+dgel_selSTAG2$samples
+```
+
+
+## Calculate dispersion and fit the model for design
+```{r}
+#estimate dispersion
+design_DEGs_STAG2pat <- model.matrix(~0+MutationGroup_STAG2pat+sex_sel+NPM1mut_sel+RUNX1mut_sel+FLT3ITDmut_sel)
+dgel_selSTAG2<- estimateDisp(dgel_selSTAG2,design_DEGs_STAG2pat,robust = TRUE)
+dgel_selSTAG2$common.dispersion #Output: 0.4118876
+
+#Visualize dispersion
+pdf(file= file.path(FIGDIR,ANALn,"dispersion.bcv.plot.STAG2patvsCTRL.pdf"), height=8, width=12)
+plotBCV(dgel_selSTAG2)
+dev.off()
+
+#Fitting genewise glms
+f5<-glmQLFit(dgel_selSTAG2,design_DEGs_STAG2pat)
+```
+
+## Contrasts and qlf test: STAG2 mut vs CTRL (non-cohesin mut)
+```{r}
+dir.create(file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL"))
+comppair = "MutationGroup_STAG2patSTAG2-MutationGroup_STAG2patCTRL"
+#make Contrasts an run qlf test
+con <- makeContrasts(comppair, levels = design_DEGs_STAG2pat)
+qlf <-glmQLFTest(f5,contrast = con)
+qstat <- topTags(qlf, n = Inf)
+sumDEG <- summary(qdt <- decideTestsDGE(qlf))
+sumDEG
+write.table(sumDEG, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","DEGsummary_STAG2.vs.CTRL.txt"), sep = "\t", col.names=NA, quote=FALSE)
+write.table(qstat, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","qstat_STAG2.vs.CTRL.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+
+#add FPKM to qstat table
+splID <- unlist(strsplit(as.character(row.names(qstat)),"[$]"))
+IDmx <- matrix(splID, ncol = 4 , byrow = TRUE )
+colnames(IDmx) <- c("EnsemblID","GeneSymbol","TranscriptLength","GeneType")
+qstatmod <- cbind(as.data.frame(qstat),IDmx)
+qstatmod$logFPKM <- qstatmod$logCPM - log2(as.numeric(as.character(qstatmod$TranscriptLength)) * 0.001)
+write.table(qstatmod, file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","qstat_STAG2.vs.CTRL.glm.extended.txt"), sep = "\t", col.names=NA, quote=FALSE)
+
+#generate smear plot
+qisDE <- as.logical(qdt)
+qDEnames <- rownames(dgel_selSTAG2)[qisDE]
+
+pdf(file= file.path(FIGDIR,ANALn,"qlf.results.smearplot.STAG2patvsCTRL.pdf"), height=8, width=12)
+plotSmear(qlf, de.tags=qDEnames)
+dev.off()
+```
+
+## Volcano plots to visualize DEGs
+### Filtering of DEGs
+```{r}
+#prepare qstat table
+qstat_SA2vs.CTRL <- as.data.frame(qstat$table)
+##order by FDR
+qstat_SA2vs.CTRL_ordered_FDR <- qstat_SA2vs.CTRL[order(qstat_SA2vs.CTRL$FDR, decreasing = FALSE), ]
+head(qstat_SA2vs.CTRL_ordered_FDR)
+##order by FC
+qstat_SA2vs.CTRL_ordered_FCdec <- qstat_SA2vs.CTRL[order(qstat_SA2vs.CTRL$logFC, decreasing = TRUE), ]
+qstat_SA2vs.CTRL_ordered_FCinc <- qstat_SA2vs.CTRL[order(qstat_SA2vs.CTRL$logFC, decreasing = FALSE), ]
+
+##filter top genes to lable
+### filter for  FDR <= 0.05 logCPM>0 Fold change decreasing order
+qstat_SA2vs.CTRL_ordered_FCdec_FDR_filt <- filter(qstat_SA2vs.CTRL_ordered_FCdec, qstat_SA2vs.CTRL_ordered_FCdec$FDR <= 0.05 & qstat_SA2vs.CTRL_ordered_FCdec$logCPM > 0) 
+### filter for  FDR <= 0.05 logCPM>0 Fold change increasing order
+qstat_SA2vs.CTRL_ordered_FCinc_FDR_filt <- filter(qstat_SA2vs.CTRL_ordered_FCinc, qstat_SA2vs.CTRL_ordered_FCinc$FDR <= 0.05 & qstat_SA2vs.CTRL_ordered_FCinc$logCPM > 0) 
+```
+### define significance category as color for dots (Volccolor)
+```{r}
+#create a new column with categories to base the colors on
+qstat_SA2vs.CTRL_ordered_FDR$Volccolor<- "NA"
+qstat_SA2vs.CTRL_ordered_FDR$Volccolor[qstat_SA2vs.CTRL_ordered_FDR$logFC < -0.585] <- "down" 
+qstat_SA2vs.CTRL_ordered_FDR$Volccolor[qstat_SA2vs.CTRL_ordered_FDR$logFC > 0.585] <- "up" 
+qstat_SA2vs.CTRL_ordered_FDR$Volccolor[qstat_SA2vs.CTRL_ordered_FDR$Volccolor=="NA"] <- "notsig"
+qstat_SA2vs.CTRL_ordered_FDR$Volccolor[qstat_SA2vs.CTRL_ordered_FDR$FDR>0.05] <- "notsig"
+table(qstat_SA2vs.CTRL_ordered_FDR$Volccolor) #shows a summary of the categories
+```
+### generate ggplot object
+```{r}
+volcSA2 = ggplot() +
+  geom_point(data=qstat_SA2vs.CTRL_ordered_FDR, aes(x=logFC, y=-log10(FDR), colour=Volccolor)) +
+  scale_color_manual(values = c("notsig" = "darkgrey", "up" = "seagreen", "down" = "firebrick")) +
+  ggtitle("STAG2 mut vs. CTRL-AML") +
+  xlab("log2 fold change") +
+  ylab("-log10 FDR") +
+  scale_y_continuous(limits = c(0,5)) + scale_x_continuous(limits = c(-10,8)) +
+  theme(legend.position = "none",
+        plot.background = element_rect(fill="white",colour = "white",linetype = 3),
+        panel.background = element_rect(fill = "white",color = "black"),
+        panel.border = element_rect(fill = NA, colour = "black",size=2),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',colour = NULL),
+        panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',colour = NULL),
+        plot.title = element_text(size = rel(2.4), hjust = 0.5),axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+        axis.title = element_text(size = rel(3)))+
+       geom_vline(xintercept = -0.585, linetype = 'dashed') + 
+       geom_vline(xintercept = 0.585,linetype = 'dashed') +
+       geom_hline(yintercept = -log10(0.05),linetype = 'dashed')
+###add lables of top 10 genes of each category
+volcSA2_labeled= volcSA2 +
+geom_text_repel(aes(x = qstat_SA2vs.CTRL_ordered_FDR$logFC[1:10], y = -log10(qstat_SA2vs.CTRL_ordered_FDR$FDR[1:10])), data =    head(qstat_SA2vs.CTRL_ordered_FDR, 10), label = qstat_SA2vs.CTRL_ordered_FDR$GeneSymbol[1:10], cex=6) +
+geom_text_repel(aes(x = qstat_SA2vs.CTRL_ordered_FCinc_FDR_filt$logFC[1:10], y = -log10(qstat_SA2vs.CTRL_ordered_FCinc_FDR_filt$FDR[1:10])), data =    head(qstat_SA2vs.CTRL_ordered_FCinc_FDR_filt, 10), label = qstat_SA2vs.CTRL_ordered_FCinc_FDR_filt$GeneSymbol[1:10], cex=6,min.segment.length=0) +
+geom_text_repel(aes(x = qstat_SA2vs.CTRL_ordered_FCdec_FDR_filt$logFC[1:10], y = -log10(qstat_SA2vs.CTRL_ordered_FCdec_FDR_filt$FDR[1:10])), data =    head(qstat_SA2vs.CTRL_ordered_FCdec_FDR_filt, 10), label = qstat_SA2vs.CTRL_ordered_FCdec_FDR_filt$GeneSymbol[1:10], cex=6,min.segment.length=0)
+plot(volcSA2_labeled)
+```
+
+### plot Volcano wiht top DEGs labelled
+```{r}
+dir.create(file.path(FIGDIR,ANALn,"Volcanoplots"))
+pdf(file = file.path(FIGDIR,ANALn,"Volcanoplots","Volcano_STAG2mut_vs.CTRL_AML.pdf"), width = 5, height = 6)
+volcSA2_labeled
+dev.off()
+
+#other size format
+#pdf(file = file.path(FIGDIR,ANALn,"Volcanoplots","Volcano_STAG2mut_vs.CTRL_AML_vertical.pdf"), width = 6, height = 9)
+#volcSA2_labeled
+#dev.off()
+
+```
+
+## Gene-ontology analysis SA2mut DEGs
+### filter gernes for input for Metascape
+```{r}
+###input for metascape: FC > 1.5 (=logFC>0.585) FDR <0.05 logCPM>1
+SA2mutdownDEGScpm1 <- filter(qstat_SA2vs.CTRL_ordered_FDR, qstat_SA2vs.CTRL_ordered_FDR$logFC <= (-0.585) & qstat_SA2vs.CTRL_ordered_FDR$FDR <= 0.05 & qstat_SA2vs.CTRL_ordered_FDR$logCPM > 1) #212
+SA2mutupDEGScpm1 <- filter(qstat_SA2vs.CTRL_ordered_FDR, qstat_SA2vs.CTRL_ordered_FDR$logFC >= (0.585) & qstat_SA2vs.CTRL_ordered_FDR$FDR <= 0.05 & qstat_SA2vs.CTRL_ordered_FDR$logCPM > 1) #439
+nrow(SA2mutdownDEGScpm1)
+nrow(SA2mutupDEGScpm1)
+write.table(SA2mutdownDEGScpm1, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","STAG2mut.down.FC1.5.CPM1.txt"), sep = "\t", col.names=NA, quote=FALSE)
+write.table(SA2mutupDEGScpm1, file = file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","STAG2mut.up.FC1.5.CPM1.txt"), sep = "\t", col.names=NA, quote=FALSE)
+
+#create directories to save mateascape results into
+dir.create(file.path(FIGDIR,ANALn,"GOanalysis"))
+dir.create(file.path(FIGDIR,ANALn,"Metascape"))
+```
+
+### read in results generated with Metascape and visuelize in barplots
+```{r}
+##read results, order and filter according to metascape instructions
+####down GOs
+SA2downGO<-read.csv(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/SA2mut_down_all.tv9uhgfrm/Enrichment_GO/_FINAL_GO.csv"))
+SA2downGO<-SA2downGO[order(SA2downGO$LogP),]
+SA2downGO$GO<-factor(SA2downGO$GO,levels=rev(SA2downGO$GO))
+SA2downGOTopinGroup<-SA2downGO[SA2downGO$FirstInGroupByLogP==1,]
+####up GOs
+SA2upGO<-read.csv(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/SA2mut_up_all.tncuj9gha/Enrichment_GO/_FINAL_GO.csv"))
+SA2upGO<-SA2upGO[order(SA2upGO$LogP),]
+SA2upGO$GO<-factor(SA2upGO$GO,levels=rev(SA2upGO$GO))
+SA2upGOTopinGroup<-SA2upGO[SA2upGO$FirstInGroupByLogP==1,]
+
+#barplot of top 10 down DEGs
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/Top10GO.SA2mut.down.metascape.pdf"),width=5,height=4)
+ggplot(SA2downGOTopinGroup[(10:1),], aes(x= -(LogP), y= GO)) +
+geom_bar(aes(fill = "filly",alpha=.8), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="firebrick1"))+
+  scale_x_continuous(expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("Top 10 enriched gene ontology gene sets") +
+  ggtitle("Downregulated genes in STAG2 mut") +
+  geom_text(data=SA2downGOTopinGroup[(10:1),],aes(x=0.1,y=GO,label=Description),size=3,hjust=0,fontface = "bold") +
+    theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=12),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=12,face="bold"), plot.title = element_text(size = 12, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+dev.off()
+
+#select non-redundant terms only
+SA2downGOTopinGroupsel<-SA2downGOTopinGroup[c(1,2,4,6:11,13),]
+#barplot of top 10 without non-related go terms
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/Top10GO.curated.SA2mut.down.metascape.2.pdf"),width=8,height=4)
+ggplot(SA2downGOTopinGroupsel[(10:1),], aes(x= -(LogP), y= GO)) +
+  geom_bar(aes(fill = "filly",alpha=.8), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="firebrick1"))+
+  scale_x_continuous(expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("downregulated \nin STAG2 mut") +
+ #ggtitle("Downregulated genes in STAG2 mut") +
+  geom_text(data=SA2downGOTopinGroupsel[(10:1),],aes(x=0.1,y=GO,label=Description),size=rel(6),hjust=0,fontface = "bold") +
+    theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=rel(2)),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=rel(1.5),face="bold"), plot.title = element_text(size = rel(1), face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+dev.off()
+
+#barplot of top 10 in up GO terms
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/Top10GO.SA2mut.up.metascape.2.pdf"),width=8,height=4)
+ggplot(SA2upGOTopinGroup[(10:1),], aes(x= -(LogP), y= GO)) +
+geom_bar(aes(fill = "filly",alpha=.8), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="seagreen"))+
+  scale_x_continuous(expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("upregulated \nin STAG2 mut") +
+  #ggtitle("Upregulated genes in STAG2 mut") +
+  geom_text(data=SA2upGOTopinGroup[(10:1),],aes(x=1,y=GO,label=Description),size=rel(6),hjust=0,fontface = "bold") +
+  theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=rel(2)),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=rel(1.5),face="bold"), plot.title = element_text(size = rel(1), face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+dev.off()
+```
+
+## TSS Positional information for SA2mut DEGs
+```{r}
+#read in TSS pos (FANTOM CAGE derived complete list)
+TSSpos<-read.table(file.path(PROJDIR,"TSS.bed"))
+
+#filter for DEG associated pos (separae for UP and DOWN sets) --> all known TSS (can be multiple per gene!)
+SA2mutdownDEGScpm1_TSS<-subset(TSSpos,V4 %in% SA2mutdownDEGScpm1$GeneSymbol)
+SA2mutupDEGScpm1_TSS<-subset(TSSpos,V4 %in% SA2mutupDEGScpm1$GeneSymbol)
+
+#write output bed files (these can be used to look at ChIP covererage etc at these genes)
+write.table(SA2mutdownDEGScpm1_TSS, file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","STAG2mut.down.FC1.5.CPM1.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+write.table(SA2mutupDEGScpm1_TSS, file.path(ANALDIR,ANALn,"STAG2pat_vs_CTRL","STAG2mut.up.FC1.5.CPM1.TSS.bed"),row.names=F,quote=F,sep="\t",col.names=F)
+```
+
+################################################ RAD21mut vs CTRL ################################################ 
+# select patient subsets: RAD21 pat + CTRL pat only
+```{r}
+#select only RAD21 patients and all CTRLs
+RAD21pat<-colnames(as.matrix(select(as.data.frame(counts), matches('RAD21|_CTRL'))))
+#subset counts
+counts_selRAD21<-counts[ , which(colnames(counts) %in% RAD21pat)]
+#subset metadata
+metad_selRAD21<-subset(metad, Sample_Name %in% RAD21pat)
+#subset variables
+MutationGroup_RAD21pat<-factor(metad_selRAD21$group,levels=c("RAD21","CTRL"))
+sex_selRAD<-factor(metad_selRAD21$sex)
+RUNX1mut_selRAD<-factor(metad_selRAD21$RUNX1)
+NPM1mut_selRAD<-factor(metad_selRAD21$NPM1)
+FLT3ITDmut_selRAD<-factor(metad_selRAD21$FLT3_ITD)
+dmut_selRAD<-factor(metad_selRAD21$DNMT3A)
+```
+
+# DEGs by MUTATION group: DEGs OF ALL RAD21 PATIENTS versus ALL CTRL AMLs
+## creating DGLIST object for RAD21 mut subset
+```{r}
+#creating DGLIST object for STAG2 subset
+dgel_selRAD21 <- DGEList(counts = counts_selRAD21, group = MutationGroup_RAD21pat, genes = genes.df)
+
+keep <- rowSums(cpm(dgel_selRAD21)>1) >= 3 
+dgel_selRAD21 <- dgel_selRAD21[keep, , keep.lib.sizes=FALSE]
+dgel_selRAD21 <- calcNormFactors(dgel_selRAD21)
+summary(keep)
+#look at norm factors
+dgel_selRAD21$samples
+```
+
+
+## Calculate dispersion and fit the model for design
+```{r}
+#estimate dispersion # include DNMT3 in design
+design_DEGs_RAD21pat <-  model.matrix(~0+MutationGroup_RAD21pat+sex_selRAD+NPM1mut_selRAD+FLT3ITDmut_selRAD+dmut_selRAD)
+dgel_selRAD21<- estimateDisp(dgel_selRAD21,design_DEGs_RAD21pat,robust = TRUE)
+dgel_selRAD21$common.dispersion
+#Output: 0.4089704
+
+#Visualize dispersion
+pdf(file= file.path(FIGDIR,ANALn,"dispersion.bcv.plot.RAD21patvsCTRL.pdf"), height=8, width=12)
+plotBCV(dgel_selRAD21)
+dev.off()
+
+#Fitting genewise glms
+f6<-glmQLFit(dgel_selRAD21,design_DEGs_RAD21pat)
+```
+
+## Contrasts and qlf test: RAD21 mut vs CTRL (non-cohesin mut)
+```{r}
+dir.create(file.path(ANALDIR,ANALn,"RAD21pat_vs_CTRL"))
+comppair = "MutationGroup_RAD21patRAD21-MutationGroup_RAD21patCTRL"
+#make Contrasts an run qlf test
+con <- makeContrasts(comppair, levels = design_DEGs_RAD21pat)
+qlfRAD <-glmQLFTest(f6,contrast = con)
+qstatRAD <- topTags(qlfRAD, n = Inf)
+sumDEGRAD <- summary(qdt <- decideTestsDGE(qlfRAD))
+sumDEGRAD
+write.table(sumDEGRAD, file = file.path(ANALDIR,ANALn,"RAD21pat_vs_CTRL","DEGsummary_RAD21.vs.CTRL.txt"), sep = "\t", col.names=NA, quote=FALSE)
+write.table(qstatRAD, file = file.path(ANALDIR,ANALn,"RAD21pat_vs_CTRL","qstat_RAD21.vs.CTRL.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+
+#add FPKM to qstat table
+splID <- unlist(strsplit(as.character(row.names(qstatRAD)),"[$]"))
+IDmx <- matrix(splID, ncol = 4 , byrow = TRUE )
+colnames(IDmx) <- c("EnsemblID","GeneSymbol","TranscriptLength","GeneType")
+qstatRADmod <- cbind(as.data.frame(qstatRAD),IDmx)
+qstatRADmod$logFPKM <- qstatRADmod$logCPM - log2(as.numeric(as.character(qstatRADmod$TranscriptLength)) * 0.001)
+write.table(qstatRADmod, file.path(ANALDIR,ANALn,"RAD21pat_vs_CTRL","qstat_RAD21.vs.CTRL.glm.extended.txt"), sep = "\t", col.names=NA, quote=FALSE)
+
+#generate smear plot
+qisDE <- as.logical(qdt)
+qDEnames <- rownames(dgel_selRAD21)[qisDE]
+
+pdf(file= file.path(FIGDIR,ANALn,"qlf.results.smearplot.RAD21patvsCTRL.pdf"), height=8, width=12)
+plotSmear(qlfRAD, de.tags=qDEnames)
+dev.off()
+```
+
+## Volcano plots to visualize DEGs
+### Filtering of DEGs
+```{r}
+#prepare qstat table
+qstat_RADvs.CTRL <- as.data.frame(qstatRAD$table)
+##order by FDR
+qstat_RADvs.CTRL_ordered_FDR <- qstat_RADvs.CTRL[order(qstat_RADvs.CTRL$FDR, decreasing = FALSE), ]
+head(qstat_RADvs.CTRL_ordered_FDR)
+##order by FC
+qstat_RADvs.CTRL_ordered_FCdec <- qstat_RADvs.CTRL[order(qstat_RADvs.CTRL$logFC, decreasing = TRUE), ]
+qstat_RADvs.CTRL_ordered_FCinc <- qstat_RADvs.CTRL[order(qstat_RADvs.CTRL$logFC, decreasing = FALSE), ]
+
+##filter top genes to label
+### filter for  FDR <= 0.05 logCPM>0 Fold change decreasing order
+qstat_RADvs.CTRL_ordered_FCdec_FDR_filt <- filter(qstat_RADvs.CTRL_ordered_FCdec, qstat_RADvs.CTRL_ordered_FCdec$FDR <= 0.05 & qstat_RADvs.CTRL_ordered_FCdec$logCPM > 0) 
+### filter for  FDR <= 0.05 logCPM>0 Fold change increasing order
+qstat_RADvs.CTRL_ordered_FCinc_FDR_filt <- filter(qstat_RADvs.CTRL_ordered_FCinc, qstat_RADvs.CTRL_ordered_FCinc$FDR <= 0.05 & qstat_RADvs.CTRL_ordered_FCinc$logCPM > 0) 
+```
+### define significance category as color for dots (Volccolor)
+```{r}
+#create a new column with categories to base the colors on
+qstat_RADvs.CTRL_ordered_FDR$Volccolor<- "NA"
+qstat_RADvs.CTRL_ordered_FDR$Volccolor[qstat_RADvs.CTRL_ordered_FDR$logFC < -0.585] <- "down" 
+qstat_RADvs.CTRL_ordered_FDR$Volccolor[qstat_RADvs.CTRL_ordered_FDR$logFC > 0.585] <- "up" 
+qstat_RADvs.CTRL_ordered_FDR$Volccolor[qstat_RADvs.CTRL_ordered_FDR$Volccolor=="NA"] <- "notsig"
+qstat_RADvs.CTRL_ordered_FDR$Volccolor[qstat_RADvs.CTRL_ordered_FDR$FDR>0.05] <- "notsig"
+table(qstat_RADvs.CTRL_ordered_FDR$Volccolor) #shows a summary of the categories
+```
+### generate ggplot object
+```{r}
+volcRAD = ggplot() +
+  geom_point(data=qstat_RADvs.CTRL_ordered_FDR, aes(x=logFC, y=-log10(FDR), colour=Volccolor)) +
+  scale_color_manual(values = c("notsig" = "darkgrey", "up" = "seagreen", "down" = "firebrick")) +
+  ggtitle("RAD21 mut vs. CTRL-AML") +
+  xlab("log2 fold change") +
+  ylab("-log10 FDR") +
+  scale_y_continuous(limits = c(0,5)) + scale_x_continuous(limits = c(-10,8)) +
+  theme(legend.position = "none",
+        plot.background = element_rect(fill="white",colour = "white",linetype = 3),
+        panel.background = element_rect(fill = "white",color = "black"),
+        panel.border = element_rect(fill = NA, colour = "black",size=2),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',colour = NULL),
+        panel.grid.minor = element_line(size = 0.25, linetype = 'dashed',colour = NULL),
+        plot.title = element_text(size = rel(2.4), hjust = 0.5),axis.text = element_text(colour = "black", size = rel(2), face = "plain"),
+        axis.title = element_text(size = rel(3)))+
+       geom_vline(xintercept = -0.585, linetype = 'dashed') + 
+       geom_vline(xintercept = 0.585,linetype = 'dashed') +
+       geom_hline(yintercept = -log10(0.05),linetype = 'dashed')
+###add lables of top 10 genes of each category
+volcRAD_labeled= volcRAD +
+geom_text_repel(aes(x = qstat_RADvs.CTRL_ordered_FCinc_FDR_filt$logFC[1:5], y = -log10(qstat_RADvs.CTRL_ordered_FCinc_FDR_filt$FDR[1:5])), data =    head(qstat_RADvs.CTRL_ordered_FCinc_FDR_filt, 5), label = qstat_RADvs.CTRL_ordered_FCinc_FDR_filt$GeneSymbol[1:5], cex=6,min.segment.length=0,max.overlaps=20) +
+geom_text_repel(aes(x = qstat_RADvs.CTRL_ordered_FCdec_FDR_filt$logFC[1:5], y = -log10(qstat_RADvs.CTRL_ordered_FCdec_FDR_filt$FDR[1:5])), data =    head(qstat_RADvs.CTRL_ordered_FCdec_FDR_filt, 5), label = qstat_RADvs.CTRL_ordered_FCdec_FDR_filt$GeneSymbol[1:5], cex=6,min.segment.length=0,max.overlaps=20)
+plot(volcRAD_labeled)
+
+```
+
+### plot Volcano wiht top DEGs labelled: RAD21 mut
+```{r}
+pdf(file = file.path(FIGDIR,ANALn,"Volcanoplots","Volcano_RAD21mut_vs.CTRL_AML.pdf"), width = 5, height = 6)
+volcRAD_labeled
+dev.off()
+```
+
+
+
+## Gene-ontology analysis RAD21mut DEGs
+### filter gernes for input for Metascape
+```{r}
+###input for metascape: FC > 1.5 (=logFC>0.585) FDR <0.05 logCPM>1
+RAD21mutdownDEGScpm1 <- filter(qstat_SA2vs.CTRL_ordered_FDR, qstat_SA2vs.CTRL_ordered_FDR$logFC <= (-0.585) & qstat_SA2vs.CTRL_ordered_FDR$FDR <= 0.05 & qstat_SA2vs.CTRL_ordered_FDR$logCPM > 1) #212
+RAD21mutupDEGScpm1 <- filter(qstat_SA2vs.CTRL_ordered_FDR, qstat_SA2vs.CTRL_ordered_FDR$logFC >= (0.585) & qstat_SA2vs.CTRL_ordered_FDR$FDR <= 0.05 & qstat_SA2vs.CTRL_ordered_FDR$logCPM > 1) #439
+nrow(RAD21mutdownDEGScpm1)
+nrow(RAD21mutupDEGScpm1)
+write.table(RAD21mutdownDEGScpm1, file = file.path(ANALDIR,ANALn,"RAD21pat_vs_CTRL","RAD21mut_down_DEGS_FC1.5.CPM1.txt"), sep = "\t", col.names=NA, quote=FALSE)
+write.table(RAD21mutupDEGScpm1, file = file.path(ANALDIR,ANALn,"RAD21pat_vs_CTRL","RAD21mut_up_DEGS_FC1.5.CPM1.txt"), sep = "\t", col.names=NA, quote=FALSE)
+```
+
+### read in results generated with Metascape and visuelize in barplots
+```{r}
+#read result tables:
+####down GOs
+RAD21downGO<-read.csv(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/RAD21mut_down_all.t3n4aiw8u/Enrichment_GO/_FINAL_GO.csv"))
+RAD21downGO<-RAD21downGO[order(RAD21downGO$LogP),]
+RAD21downGO$GO<-factor(RAD21downGO$GO,levels=rev(RAD21downGO$GO))
+RAD21downGOTopinGroup<-RAD21downGO[RAD21downGO$FirstInGroupByLogP==1,]
+
+####up GOs 
+RAD21upGO<-read.csv(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/RAD21mut_up_all.tcw9kyfs0/Enrichment_GO/_FINAL_GO.csv"))
+RAD21upGO<-RAD21upGO[order(RAD21upGO$LogP),]
+RAD21upGO$GO<-factor(RAD21upGO$GO,levels=rev(RAD21upGO$GO))
+RAD21upGOTopinGroup<-RAD21upGO[RAD21upGO$FirstInGroupByLogP==1,] 
+
+#barplot of top up DEGs
+UP<-ggplot(RAD21upGOTopinGroup[(8:1),], aes(x= -(LogP), y= GO)) +
+geom_bar(aes(fill = "filly",alpha=.8), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="mediumvioletred"))+
+  scale_x_continuous(limits = c(0,15),expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("Top enriched \n gene ontology gene sets") +
+  ggtitle("Upregulated genes in RAD21 mut") +
+  geom_text(data=RAD21upGOTopinGroup[(8:1),],aes(x=0.1,y=GO,label=Description),size=rel(3),hjust=0,fontface = "bold") +
+    theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=rel(0.8)),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=rel(0.6),face="bold"), plot.title = element_text(size = rel(0.8), face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/TopGO.RAD21mut.up.metascape.pdf"),width=5,height=4)
+plot(UP)
+dev.off()
+
+
+#barplot of top 3 in down GO terms
+RAD21downGOTopinGroupfilt<-RAD21downGOTopinGroup[c(3,4,6),] #filter for the ones that make a little sense
+
+DOWN<-ggplot(RAD21downGOTopinGroupfilt, aes(x= -(LogP), y= GO)) +
+geom_bar(aes(fill = "filly",alpha=.8), position = "dodge", stat="identity") +
+  scale_fill_manual(values = c("filly"="firebrick1"))+
+  scale_x_continuous(limits = c(0,15),expand = expansion(mult = c(0, 0))) + 
+  xlab("- log 10 P Value") + ylab("Top enriched \n gene ontology gene sets") +
+  ggtitle("Downregulated genes in RAD21 mut") +
+  geom_text(data=RAD21downGOTopinGroupfilt,aes(x=0.1,y=GO,label=Description),size=rel(3),hjust=0,fontface = "bold") +
+    theme(
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=rel(0.8)),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  legend.position="none",
+  axis.title=element_text(size=rel(0.6),face="bold"), plot.title = element_text(size = rel(0.8), face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+
+pdf(file=file.path(FIGDIR,ANALn,"GOanalysis/Metascape/Top3GO.curated.RAD21mut.down.metascape.pdf"),width=5,height=4)
+plot(DOWN)
+dev.off()
+
+#both plots in same pdf
+comb<-list(UP,DOWN) 
+#plot using plot_grid (cowplot) and set rel_heigths
+pdf(file = file.path(FIGDIR,ANALn,"GOanalysis/Metascape/GO.RAD21mut.up_down_genes.diffEP.metascape.pdf"),height = 4,width = 5)
+plot_grid(plotlist = comb,ncol=1,rel_heights= c(2,1.2))
+dev.off()
+```
+
+
+
+

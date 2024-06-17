@@ -1,0 +1,253 @@
+---
+title: "RNAseq Cohesin AML - adult HSCs - Expression of Cohesin genes"
+author: "Alexander Fischer"
+date: "05 2022"
+output: html_document
+---
+#rbioc_3-12
+
+# RNAseq comparison Cohesin AML - adult HSCs
+# Loading libraries and data
+## libraries
+```{r, echo = FALSE, include = FALSE}
+library(edgeR)
+library(GGally)
+library(ggplot2)
+library(ggrepel)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(ggpubr)
+library(Rtsne)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(cowplot)
+```
+## Defining path variables at the start
+```{r}
+DIR_DATA="/misc/data"
+PROJDIR="/misc/data/analysis/project_cohesin/Cohesin_AML"
+WORKDIR=file.path(PROJDIR,"RNAseq_comparison_HSCs")
+METADIR=file.path(WORKDIR,"Metadata") #input direcotry for respective metadata file
+RPGDIRHSC=file.path(DIR_DATA,"processedData/mapping/RNA/GRCh38/RNAseq/CD34/adult_CD34")
+METADIRAML=file.path(PROJDIR,"RNAseq/Metadata")
+ANALDIRAML=file.path(PROJDIR,"RNAseq/Analysis/Resulttables/RNAseq_Cohesin_AML_AF3")
+
+dir.create(file.path(WORKDIR,"Analysis"))
+ANALDIR=file.path(WORKDIR,"Analysis/Resulttables") #output of analysis results
+dir.create(file.path(ANALDIR))
+FIGDIR=file.path(WORKDIR,"Analysis/Plots") #output of figure directories
+dir.create(file.path(FIGDIR))
+
+STIDp="/misc/software/ngs/genome/sequence/GRCh38.PRI_p10/STAR_transcriptIDshort.txt" #this is the path to the ShortTranscriptID for a fully functional annotation of the RCT
+```
+## create a genes dataframe
+```{r}
+stid<-read.delim(STIDp,skip = 4,header = FALSE)[,1]
+genes.df<-as.data.frame(strsplit2(stid,"[$]"))
+colnames(genes.df)<-c("EnsemblID","GeneSymbol","Length","GeneType")
+genes.df$EnsemblID<-as.character(genes.df$EnsemblID)
+genes.df$GeneSymbol<-as.character(genes.df$GeneSymbol)
+genes.df$Length<-as.numeric(as.character(genes.df$Length)) 
+genes.df$GeneType<-as.character(genes.df$GeneType)
+head(genes.df)
+```
+## get metadata and add a cell type column
+```{r}
+metad_AMLcomplete<-read.table(file.path(METADIRAML, "RNAseq_Metadata_AML_STAG2_RAD21.txt"),sep = "\t",header=TRUE)
+metad_AML<-metad_AMLcomplete[,c("Sample_Name","ID","group","sex")]
+metad_AML$Celltype<-"AML"
+
+metad_adultHSCs<-read.csv(file.path(METADIR,"metad_adultHSC_simple.csv"))
+colnames(metad_adultHSCs)<-c("Sample_Name","ID","group","sex")
+metad_adultHSCs$Celltype<-"adult_HSCs"
+```
+
+## for adult HSPCs a new RCT has to be created
+```{r}
+rpgl<-list.files(path = RPGDIR,pattern = "ReadsPerGene.txt",ignore.case = FALSE)
+sortvec<-sapply(as.character(metad_adultHSCs$Sample_Name), function(x) grep(x,rpgl))
+counts<-as.data.frame(matrix(),row.names = NULL)
+for (i in sortvec) {
+rpgf<-read.delim(file.path(RPGDIR,rpgl[i]),sep = "\t",header = FALSE,check.names = TRUE,skip = 4,row.names = NULL)
+counts<-cbind(counts,rpgf[,4])
+}
+adultHSCs_RCT<-counts[,(-1)]
+colnames(adultHSCs_RCT)<-metad_adultHSCs$Sample_Name
+rownames(adultHSCs_RCT)<-stid
+ncol(adultHSCs_RCT) #all samples there?
+head(adultHSCs_RCT)
+write.table(adultHSCs_RCT,file=file.path(ANALDIR,"RCT_adultHSCs.txt"),sep = "\t",col.names=TRUE, quote=FALSE) 
+```
+
+## Read in pre-existing Read-count tables
+```{r}
+AML_RCT<-read.table(file.path(PROJDIR,"RNAseq","RNAseq_AML_STAG2_RAD21_counts.raw.txt"),header=TRUE)
+adultHSCs_RCT<-read.table(file=file.path(ANALDIR,"RCT_adultHSCs.txt"),sep = "\t",header=TRUE) 
+```
+
+## read in pre-existing statistics from individ. AML comparisons qlf tests
+```{r}
+listSA2mut2<-read.table(file=file.path(ANALDIRAML,"STAG2pat_vs_CTRL","qstat_STAG2.vs.CTRL.glm.txt"))
+listRAD21mut2<-read.table(file=file.path(ANALDIRAML,"RAD21pat_vs_CTRL","qstat_RAD21.vs.CTRL.glm.txt"))
+```
+
+# prepare data
+## merge Read-count tables and metadata respecitively
+```{r}
+#merge metadata #AML + KD
+Metamerged<-rbind(metad_AML,metad_adultHSCs)
+###add labelID column
+Metamerged$label<-paste0(Metamerged$group,"_",Metamerged$ID)
+#merge RCT tables
+RCTmerged<-cbind(AML_RCT,adultHSCs_RCT)
+write.table(RCTmerged,file=file.path(ANALDIR,"RNAseq_AML_CTRL_STAG2mut_RAD21mut_adultHSCs.counts.raw.txt"),sep = "\t",col.names=TRUE,quote=FALSE) 
+```
+
+# generate dgelist object and norm. counts
+```{r}
+#DGEList and filtering
+dgel_AMLHSCad <- DGEList(counts = RCTmerged, group = Metamerged$group, genes = genes.df)
+keep <- rowSums(cpm(dgel_AMLHSCad)>1) >= 12 
+dgel_AMLHSCad <- dgel_AMLHSCad[keep, , keep.lib.sizes=FALSE]
+dgel_AMLHSCad <- calcNormFactors(dgel_AMLHSCad)
+summary(keep)
+
+#cpm rpkm transformation
+d.log.cpm3 <- cpm(dgel_AMLHSCad, prior.count = 2, log = TRUE) 
+d.log.rpkm3 <- rpkm(dgel_AMLHSCad, prior.count = 2, normalized.lib.sizes = TRUE, log = TRUE)
+write.table (d.log.rpkm3, file = file.path(ANALDIR,"RNAseq_AML_CTRL_STAG2mut_RAD21mut_adultHSC.log.rpkm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+write.table (d.log.cpm3, file = file.path(ANALDIR,"RNAseq_AML_CTRL_STAG2mut_RAD21mut_adultHSC.log.cpm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+#scaled cpms (z score)
+d.log.cpm.scaled.transposed3<-(scale(t(d.log.cpm3)))
+d.log.cpm.scaled3<-data.matrix(t(d.log.cpm.scaled.transposed3))
+```
+
+# Gene expression barplots showing AML groups and adult CD34 samples
+## calculate average data
+```{r}
+###create a table that contains the individual values to show and transform
+Individ_pat.rpkm.m<-melt(d.log.rpkm3)
+Individ_pat.rpkm.m$group<-rep(Metamerged$group, each=length(d.log.rpkm3[,1])) 
+##summarize mean + sd
+library(plyr)
+###stack data
+dat.st<-stack(as.data.frame(d.log.rpkm3))   ##stack data to a single column
+dat.st$genename<- rep(rownames(d.log.rpkm3), times = ncol(d.log.rpkm3))  ##add genenames as extra col
+dat.st$type=rep(Metamerged$group, each=length(d.log.rpkm3[,1]))    ##add group identity as extra col
+###summarize by mutation group
+mean.d.log.rpkm3<-ddply(dat.st, .(type,genename),
+summarize,
+mean= round(mean(values),2),
+sd=round(sd(values),2))
+
+```
+
+
+## define GEX-BARplot function with optional lables and optional fixed y limits
+```{r}
+#labels for bars displaying means
+collabvec<-c("CTRL\nAML","STAG2\nmut","RAD21\nmut","healthy\nHSCs") #labels to show under bars
+collablvecempty<-c(rep("",4)) #if no labels are desired
+
+#function showing individual values as dots and showing significance levels of CTRL vs STAG2mut or CTRL vs RAD21mut
+GENEX_func_means<-function(GOI,y1=NA,y2=NA,bottom="",legloc="none",labs="HICpat",col.labs=collabvec,pointsize=rel(2)){
+GOIsearchterm<-paste0("\\$",GOI,"\\$")
+#individual HIC pat data
+GOIdataPoints<-Individ_pat.rpkm.m[grep(GOIsearchterm,Individ_pat.rpkm.m$Var1),]
+GOIdataPoints$sd<-0
+colnames(GOIdataPoints)<-c("genename","label","value","group","sd")
+rownames(GOIdataPoints)<-GOIdataPoints$label
+#average data of all patients
+GOIdata<-mean.d.log.rpkm3[grep(GOIsearchterm,mean.d.log.rpkm3$genename),]
+#GOIdata<-GOIdata[GOIdata$type=="CTRL"|GOIdata$type=="STAG2"|GOIdata$type=="RAD21",]  #subset only for the groups of interest
+GOIdata$label<-c("CTRL-average","STAG2mut-average","RAD21mut-average","HSC-average")
+col_order <- c("genename", "label","mean", "type","sd")
+GOIdata2 <- GOIdata[, col_order]
+rownames(GOIdata2)<-GOIdata2$label
+colnames(GOIdata2)<-c("genename","label","value","group","sd")
+GOIdatM<-rbind(GOIdata2,GOIdataPoints) ##merge the two
+i<-c(1:nrow(GOIdatM))
+#select the HIC patients by patID which should be labelled by geom text
+GOIdatM$label2[i]<-sapply(GOIdatM$label[i],function(x) strsplit(as.character(x), "_")[[1]][4])
+GOIdatM_HICPAT<-GOIdatM %>% filter(label2 %in% c("2236","1551","1747","3323","3488","6246","5285","UKR186","7314","12557","41580a","12514","12567","24603","2193"))
+#check if lables are desired
+if (labs=="none"){
+GOIdatM_HICPAT$label2<-""    
+}
+#pvalue data 
+pvaldataSA2<-listSA2mut2[grep(GOIsearchterm,row.names(listSA2mut2)),]
+pvalSA2<-pvaldataSA2$FDR
+pvaldataRAD21<-listRAD21mut2[grep(GOIsearchterm,row.names(listRAD21mut2)),]
+pvalRAD21<-pvaldataRAD21$FDR
+##symbol is assigned to significance level for SA2 and RAD21 group
+if (pvalSA2 < 0.001) { siglvlSA2 <- "***" } else if (pvalSA2 < 0.01) { siglvlSA2 <- "**" } else if (pvalSA2 < 0.05) { siglvlSA2 <- "*" } else { siglvlSA2 <- "ns" }
+if (pvalRAD21 < 0.001) { siglvlRAD21 <- "***" } else if (pvalRAD21 < 0.01) { siglvlRAD21 <- "**" } else if (pvalRAD21 < 0.05) { siglvlRAD21 <- "*" } else { siglvlRAD21 <- "ns" }
+##fonstize and face is assigned to significance level for SA2 and RAD21 group
+if (pvalSA2 < 0.05){
+fsSA2 <- rel(10)
+ffSA2 <- "bold"}
+else {fsSA2 <- rel(8)
+ffSA2 <- "italic"}
+if (pvalRAD21 < 0.05){
+fsRAD <- rel(10)
+fsRAD <- "bold"}
+else {fsRAD <- rel(8)
+ffRAD <- "italic"}
+##y coordinate of signifcance level symbol is calculated for SA2 and RAD21 group
+maxval<-max(GOIdatM$value)
+siglvlSTAG2coord_y <- (maxval + 0.05*maxval)
+siglvlRAD21coord_y <- (maxval + 0.1*maxval)
+#ggplot object
+ggplot(GOIdatM,aes(x=group,y=value))+
+geom_col(data=GOIdatM[1:4,],aes(x=group,y=value, fill=group),alpha=0.8)+
+scale_fill_manual(values = c("CTRL" = "firebrick", "STAG2" = "seagreen", "RAD21" = "mediumvioletred","adultHSCs"="darkorange4")) +
+scale_x_discrete(labels=col.labs) +
+geom_errorbar(data=GOIdatM[1:4,],aes(ymin=value[1:4]-sd[1:4], ymax=value[1:4]+sd[1:4]), width=.2,position=position_dodge(.9)) +
+geom_jitter(data = GOIdatM[4:nrow(GOIdatM),], aes(x=group,y=value,fill=group,color=group),alpha=0.6,size=pointsize, width = 0.1)+
+scale_color_manual(values = c("CTRL" = "lightsalmon", "STAG2" = "springgreen", "RAD21" = "violet","adultHSCs" = "coral")) +
+geom_text_repel(data = GOIdatM_HICPAT,aes(label=label2),
+                  size=rel(2),
+                  nudge_x=0.5,
+                  segment.size=0.3,
+                  min.segment.length=0.3,
+                  point.padding=0,
+                  segment.alpha=0.5,
+                  max.overlaps = 50,
+                  force = 2,
+                  show.legend = FALSE) +
+theme(
+  legend.position=legloc,
+  axis.text.x = element_text(angle=0, size=rel(2)),
+  axis.text.y=element_text(size=rel(3.5)),
+  axis.title=element_text(size=rel(2),face="bold"),
+  plot.title = element_text(size = rel(3.5), face = "bold.italic",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) +
+    coord_cartesian(ylim = c(y1,y2))+
+    xlab(bottom) + ylab("mean log rpkm") +
+    ggtitle(GOI) + 
+annotate("text", x=1.5, y=(siglvlSTAG2coord_y+0.02*siglvlSTAG2coord_y), label= siglvlSA2, size=fsSA2,fontface=ffSA2) +
+annotate("text", x=2, y=(siglvlRAD21coord_y+0.02*siglvlRAD21coord_y), label= siglvlRAD21, size=fsRAD,fontface=ffRAD) +
+annotate("segment", x = 1, xend = 2, y = siglvlSTAG2coord_y, yend = siglvlSTAG2coord_y)+
+annotate("segment", x = 1, xend = 3, y = siglvlRAD21coord_y, yend = siglvlRAD21coord_y)
+}
+```
+
+
+## plot GEX for Cohesin components and GOIs identified in previous analyses
+```{r}
+#cohesin components
+CohComp=c("STAG2","STAG1","RAD21","SMC1A","SMC3") ###Cohesin core subunits only
+PlotsCohComp = lapply(CohComp, GENEX_func_means,y1=0,y2=6.5,labs="none",pointsize=rel(3))
+pdf(file = file.path(FIGDIR,"GEXbarplots","GEX_CohesinCoreComponents_AMLvsHSC.ylim.3.pdf"),height = 10,width = 35)
+grid.arrange(grobs=PlotsCohComp,ncol=5)
+dev.off()
+```

@@ -1,0 +1,82 @@
+---
+title: "Differential Analyis of chromatin accessibility at RAD21 sites in STAG2-mut AMLs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+
+
+# Load libraries and data
+```{r}
+library(edgeR)
+library(ggplot2)
+WORKDIR="/misc/data/analysis/project_cohesin/Cohesin_AML/ATAC"
+PEAKDIR=file.path(WORKDIR,"peaks_CNVnorm")
+PEAKDIR=file.path(WORKDIR,"peaks_CNVnorm")
+FIGDIR=file.path(WORKDIR,"figures")
+DIFFDIR=file.path(WORKDIR,"diffPeaks")
+meta<-read.delim(file.path(WORKDIR,"ATAC_Cohesin_AML_meta.csv"),sep=",",header=TRUE)
+
+data <- read.delim(file.path(PEAKDIR,"ATAC_Cohesin_AML.Allpat_mergePeaks_RAD21.filtered.peaks.ann.tab.txt"), row.names=1)
+colnames(data)<-goodQCpat
+
+datastr <- read.delim(file.path(PEAKDIR,"ATAC_Cohesin_AML.Allpat_mergePeaks_strRAD21.filtered.peaks.ann.tab.txt"), row.names=1)
+colnames(datastr)<-goodQCpat
+
+group<-factor(meta$group,levels=c("ctr","SA2","RAD21"))
+sex<-factor(meta$sex)
+NPM1<-factor(meta$npm1)
+FLT3ITD<-factor(meta$flt3itd)
+DNMT3<-factor(meta$Dmut)
+RUNX1<-factor(meta$RUNX1)
+```
+
+# create dgelist object based on all RAD21 peaks
+```{r}
+d <- DGEList(counts=data,group=group)
+design <- model.matrix(~0 + group + sex + NPM1 + FLT3ITD + DNMT3)
+rownames(design) <- colnames(d)
+d <- calcNormFactors(d)
+d <- estimateDisp(d, design, robust=TRUE)
+fit <- glmQLFit(d, design)
+
+# contrasts
+conRAD <- makeContrasts(groupRAD21-groupctr, levels=design)
+qlfRAD <- glmQLFTest(fit, contrast=conRAD)
+qstatRAD <- topTags(qlfRAD, n=Inf)
+write.table (qstatRAD, file = file.path(DIFFDIR,"qstat.ATAC.RAD21mutvsCTRL.RAD21peak.ann.txt"), sep = "\t", quote=FALSE)
+summary(qdtRAD <- decideTestsDGE(qlfRAD, lfc=0.585))
+
+conSA2 <- makeContrasts(groupSA2-groupctr, levels=design)
+qlfSA2 <- glmQLFTest(fit, contrast=conSA2)
+qstatSA2 <- topTags(qlfSA2, n=Inf)
+write.table (qstatSA2, file = file.path(DIFFDIR,"qstat.ATAC.SA2mutvsCTRL.RAD21peak.ann.txt"), sep = "\t", quote=FALSE)
+summary(qdtSA2 <- decideTestsDGE(qlfSA2, lfc=0.585))
+```
+
+
+# create dgelist  based on stringent RAD21 peaks only
+```{r}
+d <- DGEList(counts=data,group=group)
+design <- model.matrix(~0 + group + sex + NPM1 + FLT3ITD + DNMT3)
+rownames(design) <- colnames(d)
+d <- calcNormFactors(d)
+d <- estimateDisp(d, design, robust=TRUE)
+fit <- glmQLFit(d, design)
+
+# contrasts
+conRAD <- makeContrasts(groupRAD21-groupctr, levels=design)
+qlfRAD <- glmQLFTest(fit, contrast=conRAD)
+qstatRAD <- topTags(qlfRAD, n=Inf)
+write.table (qstatRAD, file = file.path(DIFFDIR,"qstat.ATAC.RAD21mutvsCTRL.strRAD21peak.ann.txt"), sep = "\t", quote=FALSE)
+summary(qdtRAD <- decideTestsDGE(qlfRAD, lfc=0.585))
+
+conSA2 <- makeContrasts(groupSA2-groupctr, levels=design)
+qlfSA2 <- glmQLFTest(fit, contrast=conSA2)
+qstatSA2 <- topTags(qlfSA2, n=Inf)
+write.table (qstatSA2, file = file.path(DIFFDIR,"qstat.ATAC.SA2mutvsCTRL.strRAD21peak.ann.txt"), sep = "\t", quote=FALSE)
+summary(qdtSA2 <- decideTestsDGE(qlfSA2, lfc=0.585))
+```               
+

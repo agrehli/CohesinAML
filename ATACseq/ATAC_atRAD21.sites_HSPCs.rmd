@@ -1,0 +1,125 @@
+---
+title: "Differential Analyis of chromatin accessibility at RAD21 sites in Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+library(edgeR)
+library(ggplot2)
+library(cqn)
+library(scales)
+library(ggplot2)
+library(cowplot)
+WORKDIR="/misc/data/analysis/project_cohesin/CD34/ATAC_RS"
+PEAKDIR=file.path(WORKDIR,"peaks")
+FIGURESDIR<-file.path(WORKDIR,"figures")
+DIFFDIR=file.path(WORKDIR,"diffPeaks")
+
+names<-c("ATAC_CD34_14_3_siCtrl","ATAC_CD34_17_3_siCtrl","ATAC_CD34_18_4_siCtrl","ATAC_CD34_19_2_siCtrl","ATAC_CD34_20_6_siCtrl","ATAC_CD34_21_4_siCtrl","ATAC_CD34_20_7_Mock","ATAC_CD34_14_4_Mock","ATAC_CD34_22_3_siCtrl","ATAC_CD34_27_4_siCtrl","ATAC_CD34_28_6_siCtrl","ATAC_CD34_24_1_siCtrl","ATAC_CD34_14_1_SA1_2259_4094","ATAC_CD34_17_1_SA1_2259_4094","ATAC_CD34_21_2_SA1_2259_4094","ATAC_CD34_20_4_SA1_2259_4094","ATAC_CD34_27_3_SA1","ATAC_CD34_28_4_SA1","ATAC_CD34_14_2_SA2_529_1252","ATAC_CD34_17_2_SA2_529_1252","ATAC_CD34_21_3_SA2_529_1252","ATAC_CD34_22_2_SA2_529_1252","ATAC_CD34_20_5_SA2_529_1252","ATAC_CD34_28_5_SA2","ATAC_CD34_18_1_Rad21","ATAC_CD34_20_1_Rad21","ATAC_CD34_22_1_RAD21","ATAC_CD34_27_1_Rad21","ATAC_CD34_28_1_Rad21","ATAC_CD34_20_2_SA1_SA2","ATAC_CD34_28_2_SA1_SA2","ATAC_CD34_18_2_SA1_SA2")
+data <- read.delim(file.path(PEAKDIR,"ATAC_CD34_RAD21.peaks.ann.tab.txt"), row.names=1,header=FALSE)
+
+group <- factor(c(rep("CTRL",12), rep("SA1KD",6), rep("SA2KD",6), rep("RAD21KD",5), rep("SA1SA2KD",3)))
+batch <- factor(c(14,17,18,19,20,21,20,14,22,27,28,24,14,17,21,20,27,28,14,17,21,22,20,28,18,20,22,27,28,20,28,18))
+```
+
+# Analysis based on ATAC coverage scored at all CD34 RAD21 peaks
+## create dgelist object - no filter - and calculte qlf results
+```{r}
+d <- DGEList(counts=data,group=group)
+colnames(d) <- names
+
+design <- model.matrix(~0 + group + batch)
+rownames(design) <- colnames(d)
+d <- calcNormFactors(d)
+d <- estimateDisp(d, design, robust=TRUE)
+fit <- glmQLFit(d, design)
+
+# contrasts
+qslist<-list()
+KDs<-c("SA2KD","SA1KD","RAD21KD")
+for (KD in KDs){
+con <- makeContrasts(paste0("group",KD,"-groupCTRL"), levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qslist[[paste0("qstat",KD)]] <- topTags(qlf, n=Inf)
+write.table (qslist[[paste0("qstat",KD)]], file = file.path(DIFFDIR,paste0("qstat.ATAC.",KD,"vsCTRL.RAD21peak.ann.txt")), sep = "\t", quote=FALSE)
+qslist[[paste0("summary_qstat",KD)]]<-summary(qdt <- decideTestsDGE(qlf, lfc=0.585))
+}
+```
+
+
+# Analysis based on ATAC coverage scored at all CD34 ATAC peaks
+## cqn normalization of the data
+```{r}
+data <- read.delim(file.path(WORKDIR,"CD34_combined.intersect.peaks.CD34.ann.table.txt"), row.names="ID")
+
+d <- DGEList(counts=data,group=group)
+colnames(d) <- c("ATAC_CD34_14_3_siCtrl","ATAC_CD34_17_3_siCtrl","ATAC_CD34_18_4_siCtrl","ATAC_CD34_19_2_siCtrl","ATAC_CD34_20_6_siCtrl","ATAC_CD34_21_4_siCtrl","ATAC_CD34_20_7_Mock","ATAC_CD34_14_4_Mock","ATAC_CD34_22_3_siCtrl","ATAC_CD34_27_4_siCtrl","ATAC_CD34_28_6_siCtrl","ATAC_CD34_24_1_siCtrl","ATAC_CD34_14_1_SA1_2259_4094","ATAC_CD34_17_1_SA1_2259_4094","ATAC_CD34_21_2_SA1_2259_4094","ATAC_CD34_20_4_SA1_2259_4094","ATAC_CD34_27_3_SA1","ATAC_CD34_28_4_SA1","ATAC_CD34_14_2_SA2_529_1252","ATAC_CD34_17_2_SA2_529_1252","ATAC_CD34_21_3_SA2_529_1252","ATAC_CD34_22_2_SA2_529_1252","ATAC_CD34_20_5_SA2_529_1252","ATAC_CD34_28_5_SA2","ATAC_CD34_18_1_Rad21","ATAC_CD34_20_1_Rad21","ATAC_CD34_22_1_RAD21","ATAC_CD34_27_1_Rad21","ATAC_CD34_28_1_Rad21","ATAC_CD34_20_2_SA1_SA2","ATAC_CD34_28_2_SA1_SA2","ATAC_CD34_18_2_SA1_SA2")
+keep <- rowSums(cpm(d) > 1) >= 3
+summary(keep)
+d <- d[keep, , keep.lib.sizes=FALSE]
+covar <- read.delim(file.path(PEAKDIR,"CD34_combined.intersect.peaks.CpGann.txt"), row.names="ID")
+covar.merged <- merge(d$counts, covar, by="row.names")
+cov <- covar.merged [,34:35]
+rownames(cov) <- covar.merged [,1]
+counts <- data.matrix(covar.merged [,2:33])
+rownames(counts) <- covar.merged [,1]
+stopifnot(all(rownames(counts) == rownames(cov)))
+cqn.d <- cqn(counts, lengths = cov$length, x = cov$gccontent, tau = 0.95, verbose = TRUE)
+pdf(file="${PEAKDIR}/cqn.qc.CD34_ATAC_combined.pdf", height=4, width=8)
+par(mfrow=c(1,2))
+cqnplot(cqn.d, n = 1, xlab = "GC content", lty = 1, ylim = c(1,10))
+cqnplot(cqn.d, n = 2, xlab = "length", lty = 1, ylim = c(1,10))
+dev.off()
+# create new DEG object implementing the offset
+y <- DGEList(counts=counts,group=group)
+design <- model.matrix(~0 + group + batch)
+rownames(design) <- colnames(y)
+design
+offset <- cqn.d\$glm.offset
+y <- scaleOffset(y, offset)
+y.cqn <- estimateDisp(y, design, robust=TRUE)
+y.cqn
+fit <- glmQLFit(y.cqn, design)
+```
+
+
+## contrasts and qlf tests for all KDs
+```{r}
+KDs<-c("SA1","SA2","RAD21","SA1SA2")
+qslist2<-list()
+for (KD in KDs){
+con <- makeContrasts(paste0("group",KD,"-groupCTRL"), levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qslist2[[paste0("qstat",KD)]] <- topTags(qlf, n=Inf)
+write.table (qslist[[paste0("qstat",KD)]], file = file.path(DIFFDIR,paste0("qstat.ATAC.",KD,"vsCTRL.upperQ0.95.cqn.CD34.txt")), sep = "\t", quote=FALSE)
+qslist2[[paste0("summary_qstat",KD)]]<-summary(qdt <- decideTestsDGE(qlf, lfc=0.585))
+}
+```
+
+## annotation of results with positions and filtering
+```{r}
+#get peak coordinate information
+peaks <- read.delim(file.path(PEAKDIR,"CD34_combined.intersect.peaks.refChr.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+
+for (KD in KDs){
+#increased peaks
+up.qstat <- subset(qstat$table, logFC > 0.585 & logCPM > 0.585 & FDR < .05)
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFDIR,paste0("qstat.ATAC.",KD,"KDvsCTRL.upperQ0.95.cqn.CD34.1.5foldUP.txt")), sep = "\t", row.names=F, quote=FALSE)
+#decreased peaks
+dn.qstat <- subset(qstat$table, logFC < -0.585 & logCPM > 0.585 & FDR < .05)
+dn.pos <- merge(allpositions,dn.qstat, by="row.names")
+write.table (dn.pos, file = file.path(DIFFDIR,paste0("qstat.ATAC.",KD,"KDvsCTRL.upperQ0.95.cqn.CD34.1.5foldDOWN.txt")), sep = "\t", row.names=F, quote=FALSE)
+#all peaks
+all.pos <- merge(allpositions,qstat, by="row.names")
+write.table (all.pos, file = file.path(DIFFDIR,paste0("qstat.ATAC.",KD,"KDvsCTRL.upperQ0.95.cqn.CD34.all.txt")), sep = "\t", row.names=F, quote=FALSE)
+}
+```
+

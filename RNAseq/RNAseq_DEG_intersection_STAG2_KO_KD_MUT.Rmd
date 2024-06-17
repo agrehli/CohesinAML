@@ -1,0 +1,101 @@
+---
+title: "DEG intersections RNAseq STAG2 deficient cells"
+author: "Alexander Fischer"
+date: "20 05 2022"
+output: html_document
+---
+# load libraries
+```{r, echo = FALSE, include = FALSE}
+library(ggplot2)
+library(gplots)
+```
+
+# Defining path variables at the start
+```{r}
+DIR_DAT<-"/misc/data"
+PROJDIR<-file.path(DIR_DAT,"analysis/project_cohesin")
+WORKDIR<-file.path(PROJDIR,"CD34","DEG_intersection") #main input/output directory
+dir.create(WORKDIR)
+
+##Directories of  Datasets for Comparisons
+DIRAML<-file.path(PROJDIR,"Cohesin_AML/RNAseq/Analysis/Resulttables/RNAseq_Cohesin_AML_AF3")
+DIRKDs<-file.path(PROJDIR,"CD34/RNAseq/Analysis/Resulttables/RNAseq_HSPCs_CohesinKD")
+DIRKO<-file.path(PROJDIR,"CD34/CRISPR/RNAseq/Analysis/RNAseq_HSPCs_SA2KO_d14")
+```
+
+# direct intersection of DEGs with STAG2 KD/KO and STAG2 mut AMLs
+## read in qstat results
+```{r}
+STAG2KO_DEGs<-read.table(file.path(DIRKO,"qstat.d14.SA2KOvsCTRL.d14.glm.txt"),header=TRUE,row.names=1)
+STAG2KD_DEGs<-read.table(file.path(DIRKDs,"qstat_SA2vs.CTRL.glm.txt"),header=TRUE,row.names=1)
+STAG2mut_DEGs<-read.table(file.path(DIRAML,"STAG2pat_vs_CTRL/qstat_STAG2.vs.CTRL.glm.txt"),header=TRUE,row.names=1)
+```
+## filter 1.5 FC diff. genes
+```{r}
+##filter logFC > .585, FDR < 0.05
+genelist_SA2KO_UP2<-subset(STAG2KO_DEGs,(logFC > .585 & FDR < 0.05))
+genelist_SA2KO_DOWN2<-subset(STAG2KO_DEGs,(logFC < -.585 & FDR < 0.05))
+genelist_SA2KD_UP2 <- subset(STAG2KD_DEGs,(logFC > .585 & FDR < 0.05))
+genelist_SA2KD_DOWN2 <- subset(STAG2KD_DEGs,(logFC < -.585 & FDR < 0.05))
+genelist_SA2mut_UP2 <- subset(STAG2mut_DEGs,(logFC > .585 & FDR < 0.05))
+genelist_SA2mut_DOWN2 <- subset(STAG2mut_DEGs,(logFC < -.585 & FDR < 0.05))
+
+
+#create a list containing only the GeneSymbol column content #HSPCs and AML only
+DEGs.SA2intersUP<-list(genelist_SA2KO_UP2$GeneSymbol,genelist_SA2KD_UP2$GeneSymbol,genelist_SA2mut_UP2$GeneSymbol)
+DEGs.SA2intersDown<-list(genelist_SA2KO_DOWN2$GeneSymbol,genelist_SA2KD_DOWN2$GeneSymbol,genelist_SA2mut_DOWN2$GeneSymbol)
+#give names for the elipses of the diagram in order according to list above
+names(DEGs.SA2intersUP)<-c("SA2KO","SA2KD","SA2mut")
+names(DEGs.SA2intersDown)<-c("SA2KO","SA2KD","SA2mut")
+```
+
+## Venn diagrams
+```{r}
+vennU<-venn(DEGs.SA2intersUP)
+vennD<-venn(DEGs.SA2intersDown)
+#plot venns
+pdf(file = file.path(WORKDIR,"VennSTAG2_KD_AML_KO_UP.pdf"), width = 7, height = 7)
+venn(DEGs.SA2intersUP)
+dev.off()
+pdf(file = file.path(WORKDIR,"VennSTAG2_KD_AML_KO_DOWN.pdf"), width = 7, height = 7)
+venn(DEGs.SA2intersDown)
+dev.off()
+
+#get intesection genes
+UPintersecitonGenes<-attr(vennU,"intersections")$`SA2KO:SA2KD:SA2mut`
+UPintersecitonGenes
+#"CA2"        "AL355512.1" "MYCT1"      "UGT3A2"     "PXYLP1"    
+#"TMEM52B"    "GPX3"       "RETREG1"    "SPOCK2"  
+DownintersecitonGenes<-attr(vennD,"intersections")$`SA2KO:SA2KD:SA2mut`
+DownintersecitonGenes
+# "CNRIP1" "ITGA9"  "SOGA1"  "FLNB"   "SLC1A3" "ADCY9"  "PGBD1"  "DIRAS1"
+UPintersecitonGenesKOexcl<-attr(vennU,"intersections")$`SA2KO:SA2mut` #24 includes "PAWR"
+DownintersecitonGenesKOexcl<-attr(vennD,"intersections")$`SA2KO:SA2mut` #7 "PIK3C2B" "DDAH2"   "RPS6KA5" "TRAF5"   "OSBPL3"  "GNAI1"   "MMP15"
+UPintersecitonGenesKDexcl<-attr(vennU,"intersections")$`SA2KD:SA2mut`
+DownintersecitonGenesKDexcl<-attr(vennD,"intersections")$`SA2KD:SA2mut` 
+```
+
+## create a summary table of the genes showing associated qstat stats
+```{r}
+intersectiongeneslist<-list(UPintersecitonGenes,UPintersecitonGenesKDexcl,UPintersecitonGenesKOexcl,DownintersecitonGenes,DownintersecitonGenesKDexcl,DownintersecitonGenesKOexcl)
+names(intersectiongeneslist)<-c("SA2KD_SA2mut_SA2KO_upregulated","SA2KD_SA2mut_upregulated","SA2mut_SA2KO_upregulated","SA2KD_SA2mut_SA2KO_downregulated","SA2KD_SA2mut_downregulated","SA2mut_SA2KO_downregulated")
+intersectiongenesdflist<-list()
+for (intersectiontype in names(intersectiongeneslist)){
+UGdSA2KD<-STAG2KD_DEGs[STAG2KD_DEGs$GeneSymbol %in% intersectiongeneslist[[intersectiontype]],c("GeneSymbol","logFC","FDR")]
+colnames(UGdSA2KD)<-c("GeneSymbol","SA2KD_logFC","SA2KD_FDR")
+UGdSA2mut<-STAG2mut_DEGs[STAG2mut_DEGs$GeneSymbol %in% intersectiongeneslist[[intersectiontype]],c("GeneSymbol","logFC","FDR")]
+colnames(UGdSA2mut)<-c("GeneSymbol","SA2mut_logFC","SA2mut_FDR")
+UGdfKO<-STAG2KO_DEGs[STAG2KO_DEGs$GeneSymbol %in% intersectiongeneslist[[intersectiontype]],c("GeneSymbol","logFC","FDR")]
+colnames(UGdfKO)<-c("GeneSymbol","SA2KO_logFC","SA2KO_FDR")
+UpIntdf<-merge(UGdSA2KD,UGdSA2mut,by="GeneSymbol")
+UpIntdf<-merge(UpIntdf,UGdfKO,by="GeneSymbol")
+UpIntdf$category<-intersectiontype
+UpIntdf<-UpIntdf[, c("category","GeneSymbol","SA2KD_logFC","SA2mut_logFC","SA2KO_logFC","SA2KD_FDR","SA2mut_FDR","SA2KO_FDR")]
+intersectiongenesdflist[[intersectiontype]]<-UpIntdf
+}
+
+upintersdf<-rbind(intersectiongenesdflist[["SA2KD_SA2mut_SA2KO_upregulated"]],intersectiongenesdflist[["SA2KD_SA2mut_upregulated"]],intersectiongenesdflist[["SA2mut_SA2KO_upregulated"]])
+write.table(upintersdf, file = file.path(WORKDIR,paste0("upregulated_DEGs_intersection_SA2KD-SA2mut-SA2KO.txt")), sep = "\t", quote=FALSE,row.names = FALSE)
+downintersdf<-rbind(intersectiongenesdflist[["SA2KD_SA2mut_SA2KO_downregulated"]],intersectiongenesdflist[["SA2KD_SA2mut_downregulated"]],intersectiongenesdflist[["SA2mut_SA2KO_downregulated"]])
+write.table(downintersdf, file = file.path(WORKDIR,paste0("downregulated_DEGs_intersection_SA2KD-SA2mut-SA2KO.txt")), sep = "\t", quote=FALSE,row.names = FALSE)
+```

@@ -1,0 +1,596 @@
+---
+title: "RNAseq Cohesin AML HSPCS Combat data integration"
+author: "Alexander Fischer"
+date: "02 2023"
+output: html_document
+---
+#rbioc_3-12
+# Loading libraries needed for data processing and analysis
+```{r, echo = FALSE, include = FALSE}
+library(edgeR)
+library(GGally)
+library(ggplot2)
+library(ggrepel)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(ggpubr)
+library(Rtsne)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(gridExtra)
+library(cowplot)
+library(pheatmap)
+library(sva)
+```
+
+# Defining path variables at the start
+```{r}
+#original directories
+DIR_base="/misc/data/analysis/project_cohesin"
+WORKDIRAMLoriginal=file.path(DIR_base,"Cohesin_AML/RNAseq")
+WORKDIRKDs=file.path(DIR_base,"CD34/RNAseq")
+WORKDIRCRISPR=file.path(DIR_base,"CD34/CRISPR/RNAseq")
+DEGINTERSECIONDIR=file.path(DIR_base,"CD34/DEG_intersection")
+#directories for new combined analysis
+WORKDIR=file.path(DIR_base,"Cohesin_AML/RNAseq_comparison_HSCs")
+#METADIR=file.path(WORKDIR,"Metadata") #input direcotry for respective metadata file
+METADIRAML=file.path(WORKDIRAMLoriginal,"Metadata")
+dir.create(file.path(WORKDIR,"Analysis"))
+ANALDIR=file.path(WORKDIR,"Analysis/Resulttables") #output of analysis results
+dir.create(file.path(ANALDIR))
+FIGDIR=file.path(WORKDIR,"Analysis/Plots") #output of figure directories
+dir.create(file.path(FIGDIR))
+dir.create(file.path(FIGDIR,"combatUMAP"))
+STIDp="/misc/software/ngs/genome/sequence/GRCh38.PRI_p10/STAR_transcriptIDshort.txt" #ShortTranscriptID
+```
+# create a genes dataframe
+```{r}
+stid<-read.delim(STIDp,skip = 4,header = FALSE)[,1]
+genes.df<-as.data.frame(strsplit2(stid,"[$]"))
+colnames(genes.df)<-c("EnsemblID","GeneSymbol","Length","GeneType")
+genes.df$EnsemblID<-as.character(genes.df$EnsemblID)
+genes.df$GeneSymbol<-as.character(genes.df$GeneSymbol)
+genes.df$Length<-as.numeric(as.character(genes.df$Length)) 
+genes.df$GeneType<-as.character(genes.df$GeneType)
+head(genes.df)
+#alternate version that also keeps a column with the full short transcript ID
+genes.df2<-genes.df
+genes.df2$stID<-stid
+```
+# get metadata and add a cell and library type column
+```{r}
+###AMLs
+metad_AML_full<-read.table(file.path(WORKDIRAMLoriginal,"Metadata/RNAseq_Metadata_AML_STAG2_RAD21.txt"),header=TRUE,sep="\t")
+metad_AML<-metad_AML_full[,c("Sample_Name","ID","group","sex")]
+metad_AML$Celltype<-"AML"
+metad_AML$librarytype<-"Rotterdam"
+metad_AML[metad_AML$group=="CTRL","group"]<-"CTRLAML" #precise group name to avoid confusion
+metad_AML[metad_AML$group=="STAG2","group"]<-"STAG2mut"#precise group name to avoid confusion
+
+###HSPCs KD
+metad_HSPCs_KD_D4_full<-read.table(file.path(WORKDIRKDs,"Metadata/Metadata_RNAseq_HSPCs_cohesin_KD.txt"),header=TRUE,sep="\t")
+metad_HSPCs_KD_D4<-metad_HSPCs_KD_D4_full[,c("Sample_ID","donor","siRNA_target")]
+metad_HSPCs_KD_D4$sex<-"male"
+metad_HSPCs_KD_D4$Celltype<-"UBC_HSPCs"
+metad_HSPCs_KD_D4$librarytype<-"Regensburg1"
+colnames(metad_HSPCs_KD_D4)<-c("Sample_Name","ID","group","sex","Celltype","librarytype")
+metad_HSPCs_KD_D4[metad_HSPCs_KD_D4$group=="CTRL","group"]<-"CTRL_HSPCs" #precise group name to avoid confusion
+metad_HSPCs_KD_D4[metad_HSPCs_KD_D4$group=="SA2","group"]<-"SA2KD_HSPCs"#precise group name to avoid confusion
+metad_HSPCs_KD_D4[metad_HSPCs_KD_D4$group=="SA1","group"]<-"SA1KD_HSPCs"#precise group name to avoid confusion
+###HSPCs KO
+metad_HSPCs_CRISPR_full<-read.table(file.path(WORKDIRCRISPR,"Metadata_RNAseq_HSPCs_STAG2_KO_d14.txt"),header=TRUE,sep="\t")
+metad_HSPCs_CRISPR<-metad_HSPCs_CRISPR_full[,c("SampleID","donor","Treatment")]
+metad_HSPCs_CRISPR$sex<-"male"
+metad_HSPCs_CRISPR$Celltype<-"UBC_HSPCs"
+metad_HSPCs_CRISPR$librarytype<-"Regensburg2"
+colnames(metad_HSPCs_CRISPR)<-c("Sample_Name","ID","group","sex","Celltype","librarytype")
+metad_HSPCs_CRISPR[metad_HSPCs_CRISPR$group=="ctrl","group"]<-"CTRL_HSPCs_d14" #precise group name to avoid confusion
+metad_HSPCs_CRISPR[metad_HSPCs_CRISPR$group=="SA2_KO","group"]<-"SA2KO_HSPCs_d14"#precise group name to avoid confusion
+```
+# get Read count tables for the various cell types
+## Read in pre-existing Read-count tables
+```{r}
+AML_RCT<-read.table(file.path(WORKDIRAMLoriginal,"Analysis/Resulttables/RNAseq_Cohesin_AML_AF3/RNAseq_AML_STAG2_RAD21_counts.raw.txt"),header=TRUE)
+HSPCs_KD_RCT<-read.table(file.path(WORKDIRKDs,"Analysis/Resulttables/RNAseq_HSPCs_CohesinKD/RNAseq_HSPCs_cohesin_KD_counts_raw.txt"),header=TRUE)
+HSPCs_CRISPR_RCT<-read.table(file.path(WORKDIRCRISPR,"RNAseq_HSPCs_STAG2_KO_d14_counts_raw.txt"),header=TRUE)
+```
+## merge Read-count tables and metadata respecitively
+```{r}
+#merge metadata #AML + KD
+Metamerged<-rbind(metad_AML,metad_HSPCs_KD_D4,metad_HSPCs_CRISPR)
+###add labelID column
+Metamerged$label<-paste0(Metamerged$group,"_",Metamerged$ID)
+###merge RCT tables
+RCTmerged<-cbind(AML_RCT,HSPCs_KD_RCT,HSPCs_CRISPR_RCT)
+###check:
+nrow(Metamerged)==ncol(RCTmerged) #needs to be TRUE!
+
+##filter metadata and counts for wildtype and STAG2 or STAG1 deficient samples
+STAG2wtControls<-c("CTRLAML","CTRL_HSPCs","CTRL_HSPCs_d14","SA1KD_HSPCs")
+STAG2deficientgroups<-c("SA2KO_HSPCs_d14","SA2KD_HSPCs","STAG2mut")
+Metamerged_SA2defvsWT<-Metamerged[(Metamerged$group %in% STAG2deficientgroups | Metamerged$group %in% STAG2wtControls),]
+countsmerged_SA2defvsWT<-RCTmerged[,colnames(RCTmerged) %in% Metamerged_SA2defvsWT$Sample_Name]
+ncol(countsmerged_SA2defvsWT) == nrow(Metamerged_SA2defvsWT) #check if true
+
+##add STAG2 deficiency status
+Metamerged_SA2defvsWT$STAG2status<-"normal"
+Metamerged_SA2defvsWT[(Metamerged_SA2defvsWT$group %in% STAG2deficientgroups),"STAG2status"]<-"deficient"
+##check deficiency status by set
+table(Metamerged_SA2defvsWT$STAG2status,Metamerged_SA2defvsWT$librarytype)
+#            Regensburg1 Regensburg3 Rotterdam
+#  deficient           8           5        12
+#  normal             21           5        21
+
+##write output files for counts and meta
+write.table(countsmerged_SA2defvsWT,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_counts.raw.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+write.table(Metamerged_SA2defvsWT,file=file.path(ANALDIR,"Metadata_RNAseq_AML_HSPCs_STAG2deficient.vs.wt.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+
+#add NPM1 RUNX1 co-mut status
+Metamerged_SA2defvsWTNPM1<-Metamerged_SA2defvsWT
+metad_AML_full_filt<-subset(metad_AML_full,Sample_Name %in% Metamerged_SA2defvsWT$Sample_Name)
+NPM1mutsamples<-metad_AML_full_filt[metad_AML_full_filt$NPM1=="pos",]
+RUNX1mutsamples<-metad_AML_full_filt[metad_AML_full_filt$RUNX1=="pos",]
+Metamerged_SA2defvsWTNPM1[Metamerged_SA2defvsWTNPM1$Sample_Name %in% NPM1mutsamples$Sample_Name,"Celltype"]<-"NPM1_AML"
+Metamerged_SA2defvsWTNPM1[Metamerged_SA2defvsWTNPM1$Sample_Name %in% RUNX1mutsamples$Sample_Name,"Celltype"]<-"RUNX1_AML"
+
+Metamerged_SA2defvsWTNPM1$Celltype<-factor(Metamerged_SA2defvsWTNPM1$Celltype,levels=c("AML","NPM1_AML","RUNX1_AML","UBC_HSPCs"))
+
+write.table(Metamerged_SA2defvsWTNPM1,file=file.path(ANALDIR,"Metadata_RNAseq_AML_HSPCs_STAG2deficient.vs.wt.NPM1RUNX1.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+
+table(Metamerged_SA2defvsWTNPM1$STAG2status,Metamerged_SA2defvsWTNPM1$Celltype)
+#            AML NPM1_AML RUNX1_AML UBC_HSPCs
+#  deficient   4        4         4        13
+#  normal      8        9         4        26
+```
+
+
+
+# UMAP function
+```{r}
+#default colors and values
+colorscaleSA2vsWT<-c("CTRLAML" = "firebrick3","STAG2mut" = "seagreen3",
+  "CTRL_HSPCs" = "firebrick1", "CTRL_HSPCs_d14" = "brown4",
+   "SA2KD_HSPCs" = "seagreen1", "SA1KD_HSPCs" = "darkgoldenrod3",
+   "SA2KO_HSPCs_d14"="aquamarine4"
+   )
+celltypelabsvec<-c("AML patients","AML patients NPM1 mut","AML patients RUNX1 mut","umbilcal cord HSPCs")
+celltypeshapesvec<-c("AML" = 16, "NPM1_AML" = 17, "RUNX1_AML" = 15,"UBC_HSPCs"=18)
+
+#function with default parameters
+umapfunc2<-function(data,labels="",seedval=42,colorscale=colorscaleSA2vsWT,groupvec=Metamerged_SA2defvsWT$group,celltypevec=Metamerged_SA2defvsWT$Celltype,
+celltypelabs=celltypelabsvec,celltypeshapes=celltypeshapesvec,pchsize=4
+){
+  set.seed(seed = seedval) #set seed for reproducibility
+  #appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(data)))
+  umap.dat<-data.frame(umap.dat$layout)
+  umap.dat$group <- as.factor(groupvec)
+  umap.dat$Celltype <- as.factor(celltypevec)
+umap.p<-ggplot(data = umap.dat)+
+    aes(x = X1, y = X2)+
+    geom_point(size=pchsize, aes(colour=group,shape=Celltype)) + 
+   scale_color_manual(values = colorscale, name="Group") +
+    scale_shape_manual(values = celltypeshapes, 
+    name="Cell Type",
+    labels=celltypelabs) +
+    geom_text_repel(aes(label=labels),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50,show.legend = FALSE) +
+    ggtitle(paste0("UMAP RNAseq (seed= ",seedval,")")) + theme_light(base_size=16) +
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = 12, face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = 12, face = "plain"),
+          legend.title = element_text(colour="black", size = 12, face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = 12, face = "plain"),
+          axis.title = element_text(colour = "black",size = 12,face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black"),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+}
+```
+
+
+# ComBatSeq for data integration of RNAseq data sets prepped with different Kits
+```{r}
+#run combat using data set as batch and STAG2status as covariate
+RCTmerged_STAG2wtControls_combat<-ComBat_seq(as.matrix(countsmerged_SA2defvsWT), batch=Metamerged_SA2defvsWT$librarytype, group=Metamerged_SA2defvsWT$STAG2status)
+#read in counts to dgelist object and filter for low expression genes
+dgel_all_combat <- DGEList(counts = RCTmerged_STAG2wtControls_combat, group = Metamerged_SA2defvsWT$group, genes = genes.df)
+keep <- rowSums(cpm(dgel_all_combat)>1) >= 25 
+dgel_all_combat <- dgel_all_combat[keep, , keep.lib.sizes=FALSE]
+dgel_all_combat <- calcNormFactors(dgel_all_combat)
+summary(keep) #14103
+#calculate cpm and rpkms
+combat.d.log.cpm <- cpm(dgel_all_combat, prior.count = 2, log = TRUE) 
+combat.d.log.rpkm <- rpkm(dgel_all_combat, prior.count = 2, normalized.lib.sizes = TRUE, log = TRUE)
+
+#write output files
+write.table(combat.d.log.cpm,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_combat.corr.cpm.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+write.table(combat.d.log.rpkm,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_combat.corr.rpkm.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+
+
+######add subbatch corrections for the counts for HSPCs experiments by donor
+metad_HSPCs_KD_D4filt3<-metad_HSPCs_KD_D4filt[(metad_HSPCs_KD_D4filt$group %in% STAG2deficientgroups | metad_HSPCs_KD_D4filt$group %in% STAG2wtControls),]
+metad_HSPCs_CRISPR3<-metad_HSPCs_CRISPR[(metad_HSPCs_CRISPR$group %in% STAG2deficientgroups | metad_HSPCs_CRISPR$group %in% STAG2wtControls),]
+
+###samples without batch
+combat.d.log.cpm.wocorrsamps<-as.matrix(select(as.data.frame(combat.d.log.cpm), - matches('_AFMN|_NC|_SA2KO')))
+combat.d.log.rpkm.wocorrsamps<-as.matrix(select(as.data.frame(combat.d.log.rpkm), - matches('_AFMN|_NC|_SA2KO')))
+###HSPCs KDs
+design_plotsCD34KD3 <- model.matrix(~0+metad_HSPCs_KD_D4filt3$group)
+combat.d.log.cpm.CD34KDonly2<-as.matrix(select(as.data.frame(combat.d.log.cpm), matches('_AFMN')))
+combat.d.log.rpkm.CD34KDonly2<-as.matrix(select(as.data.frame(combat.d.log.rpkm), matches('_AFMN')))
+combat.corr.HSPCs_KD_log.cpm4<-removeBatchEffect(combat.d.log.cpm.CD34KDonly2,batch=metad_HSPCs_KD_D4filt3$ID,design=design_plotsCD34KD3)
+combat.corr.HSPCs_KD_log.rpkm4<-removeBatchEffect(combat.d.log.rpkm.CD34KDonly2,batch=metad_HSPCs_KD_D4filt3$ID,design=design_plotsCD34KD3)
+###CRISPR
+combat.d.log.cpm.CRISPRonly<-as.matrix(select(as.data.frame(combat.d.log.cpm), matches('_NC|_SA2KO')))
+combat.d.log.rpkm.CRISPRonly<-as.matrix(select(as.data.frame(combat.d.log.rpkm), matches('_NC|_SA2KO')))
+design_plotsCD34KO3 <- model.matrix(~0+metad_HSPCs_CRISPR3$group)
+combat.corr.HSPCs_CRISPR_log.cpm4<-removeBatchEffect(combat.d.log.cpm.CRISPRonly,batch=metad_HSPCs_CRISPR3$ID,design=design_plotsCD34KO3)
+combat.corr.HSPCs_CRISPR_log.rpkm4<-removeBatchEffect(combat.d.log.rpkm.CRISPRonly,batch=metad_HSPCs_CRISPR3$ID,design=design_plotsCD34KO3)
+###re-merge
+combat.log.cpm.merged.corr<-cbind(combat.d.log.cpm.wocorrsamps,combat.corr.HSPCs_KD_log.cpm4,combat.corr.HSPCs_CRISPR_log.cpm4)
+combat.log.rpkm.merged.corr<-cbind(combat.d.log.rpkm.wocorrsamps,combat.corr.HSPCs_KD_log.rpkm4,combat.corr.HSPCs_CRISPR_log.rpkm4)
+
+#write output files
+write.table(combat.log.cpm.merged.corr,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_combat.batchcorr.cpm.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+write.table(combat.log.rpkm.merged.corr,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_combat.batchcorr.rpkm.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+
+
+#plot UMAP
+##using rpkm
+pdf(file= file.path(FIGDIR,"combatUMAP","UMAP_combat_AML_HSPC.STAG2dfvsWT.nolab.woMOMAC.corr.comut2.rpkm.pdf"), height=8, width=12)
+plot(umapfunc2(combat.log.rpkm.merged.corr,seed=87,groupvec=Metamerged_SA2defvsWTNPM1$group,celltypevec=Metamerged_SA2defvsWTNPM1$Celltype,pchsize=8))
+dev.off() 
+##using cpms
+pdf(file= file.path(FIGDIR,"combatUMAP","UMAP_combat_AML_HSPC.STAG2dfvsWT.nolab.woMOMAC.corr.comut2.cpm.pdf"), height=8, width=12)
+plot(umapfunc2(combat.log.cpm.merged.corr,seed=6,groupvec=Metamerged_SA2defvsWTNPM1$group,celltypevec=Metamerged_SA2defvsWTNPM1$Celltype,pchsize=8))
+dev.off() 
+```
+
+
+
+# Generate a heatmap of the common AML-HPSC DEGs identified in the previous individual analyses
+## get overlap genes from previous analysis
+```{r}
+overlgenesUP<-read.table(file.path(DEGINTERSECIONDIR,"upregulated_DEGs_intersection_SA2KD-SA2mut-SA2KO.txt"),header=T)
+overlgenesDOWN<-read.table(file.path(DEGINTERSECIONDIR,"downregulated_DEGs_intersection_SA2KD-SA2mut-SA2KO.txt"),header=T)
+overlgenes<-rbind(overlgenesUP,overlgenesDOWN)
+OverlDEGs<-c(overlgenesUP$GeneSymbol,overlgenesDOWN$GeneSymbol)
+length(OverlDEGs)#74
+```
+
+## To show all genes identified as overlapping in previous anlysis: use less stringent cpm filter on dglist object and generate corr rpkms as above
+```{r}
+dgel_all_combat2 <- DGEList(counts = RCTmerged_STAG2wtControls_combat, group = Metamerged_SA2defvsWT$group, genes = genes.df)
+keep <- rowSums(cpm(dgel_all_combat2)>1) >= 8 
+dgel_all_combat2 <- dgel_all_combat2[keep, , keep.lib.sizes=FALSE]
+dgel_all_combat2 <- calcNormFactors(dgel_all_combat2)
+summary(keep) #16235
+
+#calculate cpm and rpkms
+combat.d.log.cpm2 <- cpm(dgel_all_combat2, prior.count = 2, log = TRUE) 
+combat.d.log.rpkm2 <- rpkm(dgel_all_combat2, prior.count = 2, normalized.lib.sizes = TRUE, log = TRUE)
+
+######add subbatch corrections
+###samples without batch
+combat.d.log.cpm2.wocorrsamps<-as.matrix(select(as.data.frame(combat.d.log.cpm2), - matches('_AFMN|_NC|_SA2KO')))
+combat.d.log.rpkm2.wocorrsamps<-as.matrix(select(as.data.frame(combat.d.log.rpkm2), - matches('_AFMN|_NC|_SA2KO')))
+###HSPCs KDs
+design_plotsCD34KD3 <- model.matrix(~0+metad_HSPCs_KD_D4filt3$group)
+combat.d.log.cpm.CD34KDonly2<-as.matrix(select(as.data.frame(combat.d.log.cpm2), matches('_AFMN')))
+combat.d.log.rpkm.CD34KDonly2<-as.matrix(select(as.data.frame(combat.d.log.rpkm2), matches('_AFMN')))
+combat.corr.HSPCs_KD_log.cpm2<-removeBatchEffect(combat.d.log.cpm.CD34KDonly2,batch=metad_HSPCs_KD_D4filt3$ID,design=design_plotsCD34KD3)
+combat.corr.HSPCs_KD_log.rpkm2<-removeBatchEffect(combat.d.log.rpkm.CD34KDonly2,batch=metad_HSPCs_KD_D4filt3$ID,design=design_plotsCD34KD3)
+###CRISPR HSPCs
+combat.d.log.cpm.CRISPRonly<-as.matrix(select(as.data.frame(combat.d.log.cpm2), matches('_NC|_SA2KO')))
+combat.d.log.rpkm.CRISPRonly<-as.matrix(select(as.data.frame(combat.d.log.rpkm2), matches('_NC|_SA2KO')))
+design_plotsCD34KO3 <- model.matrix(~0+metad_HSPCs_CRISPR3$group)
+combat.corr.HSPCs_CRISPR_log.cpm2<-removeBatchEffect(combat.d.log.cpm.CRISPRonly,batch=metad_HSPCs_CRISPR3$ID,design=design_plotsCD34KO3)
+combat.corr.HSPCs_CRISPR_log.rpkm2<-removeBatchEffect(combat.d.log.rpkm.CRISPRonly,batch=metad_HSPCs_CRISPR3$ID,design=design_plotsCD34KO3)
+###re-merge
+combat.log.cpm.merged.corr2<-cbind(combat.d.log.cpm2.wocorrsamps,combat.corr.HSPCs_KD_log.cpm2,combat.corr.HSPCs_CRISPR_log.cpm2)
+combat.log.rpkm.merged.corr2<-cbind(combat.d.log.rpkm2.wocorrsamps,combat.corr.HSPCs_KD_log.rpkm2,combat.corr.HSPCs_CRISPR_log.rpkm2)
+
+#generate scaled cpms to use for heatmaps --> "zscores"
+combat.log.cpm.scaled.transposed5<-(scale(t(combat.log.cpm.merged.corr2)))
+combat.log.cpm.scaled<-data.matrix(t(combat.log.cpm.scaled.transposed5))
+
+#write output files
+write.table(combat.log.rpkm.merged.corr2,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_combat.batchcorr.rpkm.2.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+write.table(combat.log.cpm.scaled,file=file.path(ANALDIR,"RNAseq_AML_HSPCs_STAG2deficient.vs.wt_combat.batchcorr.scaled.cpm.2.txt"),sep = "\t",col.names=TRUE, quote=FALSE)
+```
+
+## subset zscores and plot heatmap
+```{r}
+##subset names in genes df to get the short transcript IDs (stIDs)
+OverlDEGs_names<-subset(genes.df2,  genes.df2$GeneSymbol %in% overlgenes$GeneSymbol)
+##subset the zscores using the stIDs
+OverlDEGszscores<-subset(combat.log.cpm.scaled,row.names(combat.log.cpm.scaled)%in%OverlDEGs_names$stID)
+##set rownames to Genesymbols by splitting the stID (these will be shown as names in the heatmap)
+rownames(OverlDEGszscores)<-strsplit2(rownames(OverlDEGszscores),"$",fixed = TRUE)[,2]
+##check
+nrow(OverlDEGszscores)==length(OverlDEGs) ##has to be true to include all overlap genes!
+
+# order the counts
+## get the overlap category of the genes for annotation and order rows accordingly
+OverlDEGzscores2<-data.frame(OverlDEGszscores)
+OverlDEGzscores2$GeneSymbol<-row.names(OverlDEGzscores2)
+mergedf<-merge(overlgenes,OverlDEGzscores2,by="GeneSymbol")
+row.names(mergedf)<-mergedf$GeneSymbol
+mergedf$category<-factor(mergedf$category,levels=c("SA2KD_SA2mut_SA2KO_downregulated", "SA2KD_SA2mut_downregulated","SA2mut_SA2KO_downregulated",
+"SA2KD_SA2mut_SA2KO_upregulated", "SA2KD_SA2mut_upregulated", "SA2mut_SA2KO_upregulated")) #set levels!
+mergedf<-mergedf[order(mergedf$category),]
+OverlDEGszscores<-OverlDEGszscores[c(rownames(mergedf)),] #order so the heatmpap can be shown as desired
+
+## order columns as desired in the heatmap
+ctrl1<-colnames(select(as.data.frame(OverlDEGszscores), matches('AML_CTRL')))
+ctrl2<-colnames(select(as.data.frame(OverlDEGszscores), matches('_untreated')))
+ctrl3<-colnames(select(as.data.frame(OverlDEGszscores), matches('_Mock')))
+ctrl4<-colnames(select(as.data.frame(OverlDEGszscores), matches('_siCTRL|_NC')))
+sa1<-colnames(select(as.data.frame(OverlDEGszscores), matches('_SA1')))
+sa2m<-colnames(select(as.data.frame(OverlDEGszscores), matches('_STAG2')))
+sa2<-colnames(select(as.data.frame(OverlDEGszscores), matches('_SA2')))
+colorder<-c(ctrl1,ctrl2,ctrl3,ctrl4,sa1,sa2m,sa2)
+OverlDEGszscores_sort<-OverlDEGszscores[,colorder]
+## get the groupvector to that order as well
+Metamerged_SA2defvsWTNPM1_sort<-Metamerged_SA2defvsWTNPM1
+row.names(Metamerged_SA2defvsWTNPM1_sort)<-Metamerged_SA2defvsWTNPM1_sort$Sample_Name
+Metamerged_SA2defvsWTNPM1_sort<-Metamerged_SA2defvsWTNPM1_sort[colorder,]
+
+# annotation for pheatmap
+## create annotation dataframes for rows with the genes sets
+annotdf<-data.frame(
+  type=factor(mergedf$category)
+            )
+row.names(annotdf)<-rownames(mergedf)
+## create annotation dataframes for columns with the patient/sample groups
+annotation_col= data.frame(
+Group = factor(Metamerged_SA2defvsWTNPM1_sort$group)
+)
+row.names(annotation_col)<-colnames(OverlDEGszscores_sort)
+## create annotation list for the colours for column and row annotation categories defined above
+colorscale5<-c("CTRLAML" = "firebrick3", "STAG2mut" = "seagreen3","CTRL_HSPCs" = "firebrick1", "CTRL_HSPCs_d14"="brown4","SA2KD_HSPCs" = "seagreen1", "SA1KD_HSPCs" = "darkgoldenrod3","SA2KO_HSPCs_d14"="aquamarine4")
+ann_colors <- list(
+Group = colorscale5,
+type = c("SA2KD_SA2mut_SA2KO_downregulated" = "#510d0d", "SA2KD_SA2mut_downregulated" = "#f94c4c","SA2mut_SA2KO_downregulated"  = "#e81c1c",
+"SA2KD_SA2mut_SA2KO_upregulated" = "#086632", "SA2KD_SA2mut_upregulated" ="seagreen1" , "SA2mut_SA2KO_upregulated" = "aquamarine4")
+)
+## define length of DOWN cluster
+lengthDOWN<-nrow(subset(annotdf,type %in% c("SA2KD_SA2mut_SA2KO_downregulated","SA2mut_SA2KO_downregulated","SA2KD_SA2mut_downregulated")))
+
+## define color scale and breaks for zscores
+rwbcol.3 <- colorRampPalette(c("blue","white","red"))(29)
+rwb.3_break_1.5 = c(seq(-1.5,-0.5,length=10), seq(-0.49,0.49,length=10), seq(0.5,1.5,length=10))
+
+
+# call pheatmap function
+pheatmap(OverlDEGszscores_sort,
+         color = rwbcol.3,
+         kmeans_k = NA,
+         breaks = rwb.3_break_1.5,
+         legend = TRUE,
+         legend_breaks = c(-1.5,0,1.5),
+         border_color = NA,
+         #cellwidth = 4,
+         #cellheight = 8,
+         scale = "none",
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         angle_col = "0",
+         show_rownames = TRUE,
+         fontsize_row = 5,
+         labels_row = as.expression(lapply(rownames(OverlDEGszscores_sort),
+                                        function(a) bquote(italic(.(a))))),
+         labels_col = colnames(OverlDEGszscores_sort),
+         show_colnames = FALSE,
+         annotation_row = annotdf,
+         annotation_names_row = FALSE,
+         annotation_col = annotation_col,
+         annotation_names_col = FALSE,
+         annotation_colors = ann_colors,
+         #gaps_col = c(21),
+         gaps_row=lengthDOWN,
+         main = "Overlapping differentially genes \n identified in STAG2 deficient cells \n log2FC > 0.585 FDR<0.05",
+         filename = file.path(FIGDIR,"Heatmaps",paste0("pHeatmap.overlapDEGs.combat.all.2.pdf")),
+         width = 8,
+         height =6
+         )
+```
+
+
+# Gene Expression of interest
+## calculate means and standard deviations by group
+```{r}
+###create a table that contains the individual values to show and transform
+Individ_pat.rpkm.m<-melt(combat.log.rpkm.merged.corr2)
+Individ_pat.rpkm.m$group<-rep(Metamerged_SA2defvsWTNPM1$group, each=length(combat.log.rpkm.merged.corr2[,1])) 
+Individ_pat.rpkm.m$Celltype<-rep(Metamerged_SA2defvsWTNPM1$Celltype, each=length(combat.log.rpkm.merged.corr2[,1])) 
+##summarize mean + sd
+library(plyr)
+###stack data
+dat.st<-stack(as.data.frame(combat.log.rpkm.merged.corr2))   ##stack data to a single column
+dat.st$genename<- rep(rownames(combat.log.rpkm.merged.corr2), times = ncol(combat.log.rpkm.merged.corr2))  ##add genenames as extra col
+dat.st$type=rep(Metamerged_SA2defvsWTNPM1$group, each=length(combat.log.rpkm.merged.corr2[,1]))    ##add group identity as extra col
+dat.st$Celltype=rep(Metamerged_SA2defvsWTNPM1$Celltype, each=length(combat.log.rpkm.merged.corr2[,1]))    ##add group identity as extra col
+
+###summarize by group
+mean.combat.log.rpkm.merged.corr<-ddply(dat.st, .(type,genename),
+summarize,
+mean= round(mean(values),2),
+sd=round(sd(values),2))  
+```
+## Gene Expression barplot function ###floors lowest negative value if available
+```{r}
+colorscale5<-c("CTRLAML" = "firebrick3", "STAG2mut" = "seagreen3","CTRL_HSPCs" = "firebrick1", "CTRL_HSPCs_d14"="brown4","SA2KD_HSPCs" = "seagreen1", "SA1KD_HSPCs" = "darkgoldenrod3","SA2KO_HSPCs_d14"="aquamarine4")
+groupordervec<-c("CTRLAML","STAG2mut","CTRL_HSPCs","CTRL_HSPCs_d14","SA2KD_HSPCs","SA1KD_HSPCs","SA2KO_HSPCs_d14")
+xlabsBarplot<-c("CTRL\nAML","STAG2\nmut\nAML","siCTRL\nHPSCs\nd4","Cas9CTRL\nHSPCs\nd14","STAG2\nKD\nd4","STAG1\nKD\nd4","STAG2\nKO\nd14")
+
+
+#read in qstats dataframes to get the FDRs from the individual previous analyses:
+qstat_SA2mut<-read.table(file.path(WORKDIRAMLoriginal,"Analysis/Resulttables/RNAseq_Cohesin_AML_AF3/STAG2pat_vs_CTRL/qstat_STAG2.vs.CTRL.glm.txt"),sep="\t",header=T,row.names=1)
+qstat_SA2KD<-read.table(file.path(WORKDIRKDs,"Analysis/Resulttables/RNAseq_HSPCs_CohesinKD/qstat_SA2vs.CTRL.glm.txt"),sep="\t",header=T,row.names=1)
+qstat_SA1KD<-read.table(file.path(WORKDIRKDs,"Analysis/Resulttables/RNAseq_HSPCs_CohesinKD/qstat_SA1vs.CTRL.glm.txt"),sep="\t",header=T,row.names=1)
+qstat_SA2KO<-read.table(file.path(WORKDIRCRISPR,"Analysis/RNAseq_HSPCs_SA2KO_d14/qstat.d14.SA2KOvsCTRL.d14.txt"),sep="\t",header=T,row.names=1)
+#default group order: controls next to direct comparison sample
+groupordervec<-c("CTRLAML","STAG2mut","CTRL_HSPCs","SA2KD_HSPCs","SA1KD_HSPCs","CTRL_HSPCs_d14","SA2KO_HSPCs_d14")
+xlabvecCTvsDef<-c("CTRL\nAML","STAG2\nmut","CTRL\nHPSCs","STAG2\nKD", "STAG1\nKD","CTRL\nHSPCs_d14","STAG2\nKO")
+GENEX_func_floored<-function(GOI,datamean=mean.combat.log.rpkm.merged.corr,dataindivid=Individ_pat.rpkm.m,bottom="",legloc="none",colors=colorscale5,y1=NA,y2=NA,shapevec=celltypeshapesvec,xlabs=xlabvecCTvsDef,grouporder=groupordervec,starsize=5){
+GOIsearchterm<-paste0("\\$",GOI,"\\$")
+if ((nrow(datamean[grep(GOIsearchterm,datamean$genename),])==0) & (GOI %in% genes.df$GeneSymbol)){
+warning(paste0(GOI," gene was filtered out"))
+}
+else if((nrow(datamean[grep(GOIsearchterm,datamean$genename),])==0) & !(GOI %in% genes.df$GeneSymbol)){
+warning(paste0(GOI," gene not found"))
+}
+else{   
+#individual data
+GOIdataPoints<-dataindivid[grep(GOIsearchterm,dataindivid$Var1),]
+GOIdataPoints$sd<-0
+colnames(GOIdataPoints)<-c("genename","label","value","group","Celltype","sd")
+rownames(GOIdataPoints)<-GOIdataPoints$label
+#average data
+GOIdata<-datamean[grep(GOIsearchterm,datamean$genename),]
+GOIdata$label<-paste0(GOIdata$type,"_average")
+GOIdata$Celltype<-"AML"
+col_order <- c("genename", "label","mean", "type","Celltype","sd")
+GOIdata2 <- GOIdata[, col_order]
+rownames(GOIdata2)<-GOIdata2$label
+colnames(GOIdata2)<-c("genename","label","value","group","Celltype","sd")
+GOIdatM<-rbind(GOIdata2,GOIdataPoints) ##merge the two
+GOIdatM$group<-factor(GOIdatM$group,levels=grouporder)
+# Shift data so that the lowest negative value is treated as 0.1
+GOIdatM$value2 <- GOIdatM$value - min(GOIdatM$value) + 0.1
+
+#get pvalue data
+pvalSA2m<-qstat_SA2mut[grep(GOIsearchterm,rownames(qstat_SA2mut)),"FDR"]
+pvalSA2KD<-qstat_SA2KD[grep(GOIsearchterm,rownames(qstat_SA2KD)),"FDR"]
+pvalSA1KD<-qstat_SA1KD[grep(GOIsearchterm,rownames(qstat_SA1KD)),"FDR"]
+pvalSA2KO<-qstat_SA2KO[grep(GOIsearchterm,rownames(qstat_SA2KO)),"FDR"]
+#symbol is assigned to significance level for SA2 and RAD21 group
+if (pvalSA2m < 0.001) { siglvlSA2m <- "***" } else if (pvalSA2m < 0.01) { siglvlSA2m <- "**" } else if (pvalSA2m < 0.05) { siglvlSA2m <- "*" } else { siglvlSA2m <- "ns" }
+if (pvalSA2KD < 0.001) { siglvlSA2KD <- "***" } else if (pvalSA2KD < 0.01) { siglvlSA2KD <- "**" } else if (pvalSA2KD < 0.05) { siglvlSA2KD <- "*" } else { siglvlSA2KD <- "ns" }
+if (pvalSA1KD < 0.001) { siglvlSA1KD <- "***" } else if (pvalSA1KD < 0.01) { siglvlSA1KD <- "**" } else if (pvalSA1KD < 0.05) { siglvlSA1KD <- "*" } else { siglvlSA1KD <- "ns" }
+if (pvalSA2KO < 0.001) { siglvlSA2KO <- "***" } else if (pvalSA2KO < 0.01) { siglvlSA2KO <- "**" } else if (pvalSA2KO < 0.05) { siglvlSA2KO <- "*" } else { siglvlSA2KO <- "ns" }
+
+#define limits and y-axis ticks + labels
+if (min(GOIdatM$value)<=0){
+y_ticks_orig <- pretty(GOIdatM$value) #these will be displayed on the axis
+y_ticks <- y_ticks_orig - min(GOIdatM$value) + 0.1 #transform ticks same as data
+y_limits <- c(-0.1, (max(GOIdatM$value2)+max(GOIdatM$sd)+0.1)) #limits according to transformed values
+ngroups<-nrow(GOIdata2)
+#coordinates for siglvl symbols and segments
+maxval<-max(GOIdatM$value2)
+siglvlSA2m_y <- (maxval + 0.05*maxval)
+siglvlSA2KD_y <- (maxval + 0.05*maxval)
+siglvlSA1KD_y <- (siglvlSA2KD_y + 0.05*maxval)
+siglvlSA2KO_y <- (maxval + 0.05*maxval)
+
+#ggplot object
+ggplot(GOIdatM,aes(x=group,y=value2))+
+geom_col(data=GOIdatM[1:ngroups,],aes(x=group,y=value2, fill=group),alpha=0.6)+
+scale_fill_manual(values = colors)+
+scale_x_discrete(labels=xlabs) +
+geom_jitter(data = GOIdatM[(ngroups+1):nrow(GOIdatM),], aes(x=group,y=value2,fill=group,color=group,shape=Celltype),alpha=1,size=rel(5), width = 0.1)+
+geom_errorbar(data=GOIdatM[1:ngroups,],aes(ymin=value2[1:ngroups]-sd[1:ngroups], ymax=value2[1:ngroups]+sd[1:ngroups]), width=.2,position=position_dodge(.9)) +
+scale_color_manual(values = colors) +
+scale_y_continuous(
+limits = y_limits,  
+breaks = y_ticks,
+labels = y_ticks_orig) +
+scale_shape_manual(values = shapevec, name="Cell Type") +
+theme(
+  legend.position=legloc,
+  axis.text.x=element_text(size=rel(3),face="bold"),
+  legend.text=element_text(size=rel(1)),
+  legend.title=element_text(size=rel(1)),
+  axis.text.y=element_text(size=rel(2)),
+  axis.title=element_text(size=rel(2),face="bold"),
+  plot.title = element_text(size = rel(4), face = "bold.italic",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) +
+    xlab(bottom) + ylab("log2 rpkm") +
+    ggtitle(GOI)+
+annotate("text", x=1.5, y=(siglvlSA2m_y+0.015*siglvlSA2m_y), label= siglvlSA2m, size=rel(starsize),fontface="bold") +
+annotate("text", x=3.5, y=(siglvlSA2KD_y+0.015*siglvlSA2m_y), label= siglvlSA2KD, size=rel(starsize),fontface="bold") +
+annotate("text", x=4, y=(siglvlSA1KD_y+0.015*siglvlSA2m_y), label= siglvlSA1KD, size=rel(starsize),fontface="bold") +
+annotate("text", x=6.5, y=(siglvlSA2KO_y+0.015*siglvlSA2m_y), label= siglvlSA2KO, size=rel(starsize),fontface="bold") +
+annotate("segment", x = 1, xend = 2, y = siglvlSA2m_y, yend = siglvlSA2m_y)+
+annotate("segment", x = 3, xend = 4, y = siglvlSA2KD_y, yend = siglvlSA2KD_y)+
+annotate("segment", x = 3, xend = 5, y = siglvlSA1KD_y, yend = siglvlSA1KD_y)+
+annotate("segment", x = 6, xend = 7, y = siglvlSA2KO_y, yend = siglvlSA2KO_y)
+}
+else{
+#ggplot object
+maxval<-max(GOIdatM$value)
+siglvlSA2m_y <- (maxval + 0.05*maxval)
+siglvlSA2KD_y <- (maxval + 0.05*maxval)
+siglvlSA1KD_y <- (siglvlSA2KD_y + 0.05*maxval)
+siglvlSA2KO_y <- (maxval + 0.05*maxval)
+
+ggplot(GOIdatM,aes(x=group,y=value))+
+geom_col(data=GOIdatM[1:ngroups,],aes(x=group,y=value, fill=group),alpha=0.6)+
+scale_fill_manual(values = colors)+
+scale_x_discrete(labels=xlabs) +
+geom_jitter(data = GOIdatM[(ngroups+1):nrow(GOIdatM),], aes(x=group,y=value,fill=group,color=group,shape=Celltype),alpha=1,size=rel(5), width = 0.1)+
+geom_errorbar(data=GOIdatM[1:ngroups,],aes(ymin=value[1:ngroups]-sd[1:ngroups], ymax=value[1:ngroups]+sd[1:ngroups]), width=.2,position=position_dodge(.9)) +
+scale_color_manual(values = colors) +
+scale_shape_manual(values = shapevec, name="Cell Type") +
+theme(
+  legend.position=legloc,
+  axis.text.x=element_text(size=rel(3),face="bold"),
+  axis.text.y=element_text(size=rel(2)),
+  axis.title=element_text(size=rel(2),face="bold"),
+  legend.text=element_text(size=rel(1)),
+  legend.title=element_text(size=rel(1)),
+  plot.title = element_text(size = rel(4), face = "bold.italic",hjust=0.5),
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),) +
+    coord_cartesian(ylim = c(y1,y2))+
+    xlab(bottom) + ylab("log2 rpkm") +
+    ggtitle(GOI)+
+annotate("text", x=1.5, y=(siglvlSA2m_y+0.015*siglvlSA2m_y), label= siglvlSA2m, size=rel(starsize),fontface="bold") +
+annotate("text", x=3.5, y=(siglvlSA2KD_y+0.015*siglvlSA2m_y), label= siglvlSA2KD, size=rel(starsize),fontface="bold") +
+annotate("text", x=4, y=(siglvlSA1KD_y+0.015*siglvlSA2m_y), label= siglvlSA1KD, size=rel(starsize),fontface="bold") +
+annotate("text", x=6.5, y=(siglvlSA2KO_y+0.015*siglvlSA2m_y), label= siglvlSA2KO, size=rel(starsize),fontface="bold") +
+annotate("segment", x = 1, xend = 2, y = siglvlSA2m_y, yend = siglvlSA2m_y)+
+annotate("segment", x = 3, xend = 4, y = siglvlSA2KD_y, yend = siglvlSA2KD_y)+
+annotate("segment", x = 3, xend = 5, y = siglvlSA1KD_y, yend = siglvlSA1KD_y)+
+annotate("segment", x = 6, xend = 7, y = siglvlSA2KO_y, yend = siglvlSA2KO_y)
+}
+}}
+
+GENEX_func_grid_floored<-function(GOIvector,ncol=3,datamean=mean.combat.log.rpkm.merged.corr,dataindivid=Individ_pat.rpkm.m,bottom="",legloc="none",colors=colorscale5,y1=NA,y2=NA,shapevec=celltypeshapesvec,xlabs=xlabvecCTvsDef,grouporder=groupordervec,starsize=5){
+GOIvectorfilt<-subset(GOIvector,GOIvector %in% as.data.frame(strsplit2(mean.combat.log.rpkm.merged.corr$genename,"[$]"))[,"V2"])
+missing<-subset(GOIvector,!(GOIvector %in% as.data.frame(strsplit2(mean.combat.log.rpkm.merged.corr$genename,"[$]"))[,"V2"]))
+Plots = lapply(GOIvectorfilt, GENEX_func_floored,datamean=datamean,dataindivid=dataindivid,legloc=legloc,bottom=bottom,xlabs=xlabs,colors=colors,shapevec=shapevec,grouporder=grouporder,y1=y1,y2=y2,starsize=starsize)
+plot_grid(plotlist = Plots,ncol=ncol)
+#warning(paste0("missing genes: ",missing))
+}
+
+```
+
+## Apply floored barplot function for Genes of Interest
+```{r}
+##most interesting genes: 
+GOIsOVERLAP<-c("MYCT1","ITGA9","DACT1","SOGA1","CNRIP1","SLC1A3","DIRAS1","KIF17","GNAI1","SH2D2A","KIF17","ILDR2")
+pdf(file = file.path(FIGDIR,"GEXbarplots_combat","GEX_OVERLAPDEGS.GOIS.SA2def.vs.WT.AML.HSPCs.rpkm.floored.2.pdf"),height=45,width=30)
+GENEX_func_grid_floored(GOIsOVERLAP,ncol=3,bottom="",legloc="none",colors=colorscale5,y1=NA,y2=NA,starsize=10)
+dev.off()
+```
+
