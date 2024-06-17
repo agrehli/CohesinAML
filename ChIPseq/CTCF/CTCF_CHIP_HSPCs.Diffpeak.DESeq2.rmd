@@ -1,0 +1,111 @@
+--
+title: "Differential Analysis CTCF ChIP in Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "03 2023"
+output: html
+---
+#rbioc_3-12
+
+# load libraries 
+```{r}
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(corrplot)
+library(cowplot)
+library(edgeR)
+library(GGally)
+library(gplots)
+library(RColorBrewer)
+library(reshape2)
+library(sqldf)
+library(ggpubr)
+library(Rtsne)
+library("RColorBrewer")
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(hexbin)
+```
+# set paths
+```{r}
+DIR_DATA="/misc/data"
+WORKDIR=file.path(DIR_DATA,"analysis/project_cohesin/CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12")
+Peakdir<-file.path(WORKDIR,"peaks")
+Clustdir<-file.path(WORKDIR,"figures/Clustering")
+diffpeakdir<-file.path(WORKDIR,"diffPeaks")
+KDs<-c("SA2KD","SA1KD","RAD21KD")
+Filts<-c("2foldUp", "2foldDown")
+
+```
+
+# read in data
+```{r}
+#data
+data <- read.delim(file.path(WORKDIR,"CD34_CTCF.peaks.ann.Rinput.txt"), row.names="ID")
+#meta info
+group <- factor(c(rep("CTRL",10), rep("SA1KD",5), rep("SA2KD",6), rep("RAD21KD",4)),levels=c("CTRL","SA2KD", "SA1KD","RAD21KD"))
+batch <- factor(c(14,14,17,18,19,21,22,24,27,28,14,17,21,27,28,14,17,20,21,22,28,18,22,27,28))
+#peak coordinates for annotation
+peaks <- read.delim(file.path(Peakdir,"CD34_CTCF.filtered.peaks.txt"), header=T,row.names=1)
+peaks<-peaks[,c(1:5)]
+colnames(peaks) <- c("chr","start","stop","strand","NA")
+```
+
+# Differential Peak analysis
+## DESeq2 analysis
+```{r}
+library(DESeq2)
+metadata<-data.frame(group=group,batch=batch)
+row.names(metadata)<-colnames(data)
+
+#created Deseq count table with simple design
+ddsFullCountTable <- DESeqDataSetFromMatrix(
+countData = data,
+colData = metadata,
+design = ~ group)
+##ensure CTRL group is used as reference point for statistics
+ddsFullCountTable$group<-relevel(ddsFullCountTable$group, ref = "CTRL")
+dds2 <- DESeq(ddsFullCountTable)
+##summarize results
+reslistDS<-list()
+for (KD in KDs){
+reslistDS[[paste0(KD,"res")]]<-results(dds2, contrast=c("group",KD,"CTRL"))
+}
+
+# diffpeaks 
+for (KD in KDs){
+reslistDS[[paste0(KD,"DS.2foldUp")]] <- subset(reslistDS[[paste0(KD,"res")]], log2FoldChange > 1 & padj < .05)
+reslistDS[[paste0(KD,"DS.2foldDown")]] <- subset(reslistDS[[paste0(KD,"res")]], log2FoldChange < -1 & padj < .05)
+}
+#summarize res
+summarydfDS<-data.frame()
+for (KD in KDs){
+    for (Filt in Filts){
+summarydfDS[KD,Filt]<-nrow(reslistDS[[paste0(KD,"DS.",Filt)]])
+}}
+summarydfDS
+#        2foldUp 2foldDown
+#SA2KD        31        37
+#SA1KD         0         0
+#RAD21KD     573      3583
+
+#annotate results and diffpeaks with position coordinates
+for (KD in KDs){
+DS.ann<-merge(peaks,data.frame(reslistDS[[paste0(KD,"res")]]), by="row.names")
+write.table (DS.ann, file = file.path(diffpeakdir,paste0(KD,"vsCTRL.CTCF.Peaks_DESeq.all.txt")), sep = "\t", row.names=F, quote=FALSE)
+    for (Filt in Filts){
+DS.ann<-merge(peaks,data.frame(reslistDS[[paste0(KD,"DS.",Filt)]]), by="row.names")
+write.table (DS.ann, file = file.path(diffpeakdir,paste0(KD,"vsCTRL.CTCF.Peaks_DESeq.",Filt,".txt")), sep = "\t", row.names=F, quote=FALSE)  
+}}
+
+#counts for clustering
+normcountsDS<-counts(dds2, normalized=T)
+corr.normcountsDS <- removeBatchEffect(normcountsDS, batch=batch, design=design2)
+
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```

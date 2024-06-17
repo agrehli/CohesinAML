@@ -1,0 +1,214 @@
+---
+title: "Differential Analyis and Clustering of H3K27ac ChIPseq data of Cohesin AMLs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+# Load libraries and data
+```{r}
+library(edgeR)
+library(cqn)
+library(scales)
+library(ggplot2)
+library(umap)
+library(ggrepel)
+
+
+#set paths
+DIR_DATA="/misc/data"
+WORKDIR<-file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis/H3K27ac")
+FIGDIR=file.path(WORKDIR,"figures")
+dir.create(file.path(FIGDIR,"Clustering"))
+
+#read in counts, metadata and peak coordinates
+data <- read.delim(file.path(WORKDIR,"annotation_tables","Allpat_H3K27ac.XYrem.CNVnorm.peaks.ann.Rinput.txt"), row.names=1)
+metadata <- read.csv(file.path(WORKDIR,"AML_H3K27ac_meta.csv"),row.names="X...ChIP.ID")
+peaks <- read.delim(file=file.path(WORKDIR,"peaks/Allpat_mergePeaks_H3K27ac.filtered.XYrem.peaks.refChr.txt"), header=F)
+colnames(data)<-metadata$shortID_patID
+#CpG and length annotated peak information
+covar <- read.delim(file=file.path(WORKDIR,"peaks/Allpat_mergePeaks_H3K27ac.filtered.XYrem.peaks.CpGann.txt"), row.names="ID")
+```
+
+
+# cqn normalization (all patient groups in one set)
+```{r}
+#define group vector
+group<-factor(metadata$group,levels=c("ctr", "Rad21", "SA2"))
+#create dglist object
+d <- DGEList(counts=data,group=group)
+#filtering of very rare features by cpm
+keep <- rowSums(cpm(d) > 1) >= 2
+summary(keep)
+d <- d[keep, , keep.lib.sizes=FALSE]
+nrow(d$counts) #62840
+#merge covariates (Peak info) and counts
+covar.merged <- merge(d$counts, covar, by="row.names")
+cov <- covar.merged [(ncol(covar.merged)-1):ncol(covar.merged)]
+head(cov)
+rownames(cov) <- covar.merged [,1]
+counts <- data.matrix(covar.merged [,2:(ncol(covar.merged)-2)])
+rownames(counts) <- covar.merged [,1]
+stopifnot(all(rownames(counts) == rownames(cov)))
+
+#run cqn using lenth and gc content of the samples
+cqn.d <- cqn(counts, lengths = cov$length, x = cov$gccontent, tau = 0.95, verbose = TRUE)
+#cqn plot:
+pdf(file=file.path(FIGDIR,"cqn.qc.CohesinAML.CNVnorm.pdf"), height=4, width=8)
+par(mfrow=c(1,2))
+cqnplot(cqn.d, n = 1, xlab = "GC content", lty = 1, ylim = c(1,10))
+cqnplot(cqn.d, n = 2, xlab = "length", lty = 1, ylim = c(1,10))
+dev.off()
+
+# create new DEG object implementing the offset
+y <- DGEList(counts=counts,group=group)
+design <- model.matrix(~0 + group)
+rownames(design) <- colnames(y)
+offset <- cqn.d$glm.offset
+y <- scaleOffset(y, offset)
+logcpm <- cpm(y, prior.count=2, log=TRUE, offset=y$offset)
+write.table (logcpm, file = file.path(WORKDIR,"Allpat_mergePeaks_CNVnorm_H3K27ac_ReadCountTable.norm.logcpm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+```
+
+
+
+
+# UMAP clustering highlighting important Co-mutation with cqn normalized data
+```{r}
+data<-logcpm
+colnames(data)<-metadata$shortID_patID
+group<-factor(metadata$group,levels=c("ctr", "SA2","Rad21"))
+
+#set seed for reproducibility
+  set.seed(seed = 42)
+  #appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(data)))
+  umap.dat<-data.frame(umap.dat$layout) 
+  umap.dat$group<-group
+  umap.dat$VialID<-factor(metadata$shortID_vial)
+  umap.dat$patID<-factor(metadata$shortID_patID)
+  umap.dat$NPM1mut<-factor(metadata$npm1)
+  umap.dat$RUNX1mut<-factor(metadata$RUNX1)
+  umap.dat$ASXL1mut<-factor(metadata$ASXL1)
+  umap.dat$SRSF2mut<-factor(metadata$SRSF2)
+  umap.dat$flt3idt<-factor(metadata$flt3itd,levels=c("pos","neg"))
+  umap.dat$HiCstatus<-factor(metadata$HIC)
+  umap.dat$HiCstatus<-factor(metadata$HIC)
+  umap.dat$sex<-factor(metadata$sex)
+  umap.dat$cohesin_perc_mut<-factor(metadata$cohesin_perc_mut)
+  umap.dat$SRSF2mutASXL1mut<-paste0(umap.dat$SRSF2mut,umap.dat$ASXL1mut)
+  umap.dat$NPM1mutRUNX1mut<-paste0(umap.dat$NPM1mut,umap.dat$RUNX1mut)
+  umap.dat$NPM1mutASXL1mut<-paste0(umap.dat$NPM1mut,umap.dat$ASXL1mut)
+  umap.dat$NPM1mutRUNX1mutSRSF2mutASXL1mut<-paste0(umap.dat$NPM1mutRUNX1mut,umap.dat$SRSF2mutASXL1mut)
+  umap.dat$NPM1mutRUNX1mutSRSF2mutASXL1mut<-factor(umap.dat$NPM1mutRUNX1mutSRSF2mutASXL1mut,levels=c("posnegnegneg", "negnegnegneg","negnegposneg","negnegpospos","negposnegneg","negpospospos"))
+
+#hiC pat subset
+umap.datHICPaT<-umap.dat %>% filter(HiCstatus ==1)
+
+
+##Visualize cohesin status, FLT3-ITD, NPM1, RUNX1 using the filled shapes so the outline serves as additional encoding
+ umap.p<-ggplot(data =umap.dat)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-3,3)) +
+    scale_y_continuous(limits = c(-3,3))+  
+    geom_point(size=12,aes(fill=group,colour=flt3idt,shape=NPM1mutRUNX1mut,stroke = flt3idt))+
+    scale_fill_manual(values = c("ctr" = "firebrick", "SA2" = "seagreen","Rad21"="mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut")) +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "azure3"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 0),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1","RUNX1","none shown")) +
+    #geom_text_repel(aes(label=metadata$shortID_patID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    #geom_text_repel(data= umap.dat2HICPaT, aes(label=VialID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP H3K27ac Cohesin AML")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = 12, face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = 12, face = "plain"),
+          legend.title = element_text(colour="black", size = 12, face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = 12, face = "plain"),
+          axis.title = element_text(colour = "black",size = 12,face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIR,"Clustering","UMAP_H3K27ac.allpat.nolab.mutsindicated.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+
+
+
+
+# Differential peak analysis using DGElist object with implemented cqn offset 
+```{r}
+#create design matrix including comutations as covariates and calculate fit
+NPM1status<- factor(as.character(metadata$npm1))
+FLT3status<-factor(as.character(metadata$flt3itd))
+RUNX1status<-factor(as.character(metadata$RUNX1))
+sex<-factor(as.character(metadata$sex))
+
+design <- model.matrix(~0 + group + NPM1status + sex + FLT3status + RUNX1status)
+fit <- glmQLFit(y.cqn, design)
+
+# SA2mut vs CTRL
+con <- makeContrasts(groupSA2-groupctr, levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qstat <- topTags(qlf, n=Inf)
+#write.table (qstat, file = "${DIFFDIR}/qstat.SA2mutvsCTRL.upperQ0.95.cqn.txt", sep = "\t", col.names=NA, quote=FALSE)
+write.table(qstat, file = file.path(WORKDIR,"diffPeaks/qstat.SA2mutvsCTRL.upperQ0.95.cqn.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlf, lfc=1))
+
+#       -1*groupctr 1*groupSA2
+#Down                      792
+#NotSig                  72658
+#Up                       2554
+# MvA plot 
+#pdf(file="${FIGURESDIR}/edgeR_H3K27ac_MvA_withBatchCorr_SA2mutvsCTRL.pdf", height=5, width=5)
+pdf(file=file.path(FIGDIR,"edgeR_H3K27ac_MvA_SA2mutvsCTRL.pdf"), height=5, width=5)
+plotMD(qlf, status=qdt , values=c(1,-1), hl.col = c("red","blue"), hl.cex = 0.6, bg.col="gray", main="H3K27ac MvA SA2mut vs CTRL")
+abline(h=c(-1,1), col="black")
+dev.off()
+
+# annotation with positions
+up.qstat <- subset(qstat$table, logFC > 1 & logCPM > 1 & FDR < .05)
+nrow(up.qstat)  #1864  
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(WORKDIR,"diffPeaks/qstat.SA2mutvsCTRL.upperQ0.95.cqn.2foldUp.txt"), sep = "\t", row.names=F, quote=FALSE)
+down.qstat <- subset(qstat$table, logFC < -1 & logCPM > 1 & FDR < .05)
+nrow(down.qstat)    #457 
+down.pos <- merge(allpositions,down.qstat, by="row.names")
+write.table (down.pos, file = file.path(WORKDIR,"diffPeaks/qstat.SA2mutvsCTRL.upperQ0.95.cqn.2foldDown.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+
+# RAD21mut vs CTRL with cqn norm
+con <- makeContrasts(groupRad21-groupctr, levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qstat <- topTags(qlf, n=Inf)
+write.table (qstat, file = file.path(WORKDIR,"diffPeaks/qstat.RAD21mutvsCTRL.upperQ0.95.cqn.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlf, lfc=1))
+# Mva plot 
+pdf(file=file.path(FIGDIR,"edgeR_H3K27ac_MvA_RAD21mutvsCTRL.pdf"), height=5, width=5)
+plotMD(qlf, status=qdt , values=c(1,-1), hl.col = c("red","blue"), hl.cex = 0.6, bg.col="gray", main="H3K27ac MvA RAD21mut vs CTRL")
+abline(h=c(-1,1), col="black")
+dev.off()
+
+# annotation with positions
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+up.qstat <- subset(qstat$table, logFC > 1 & logCPM > 1 & FDR < .05)
+nrow(up.qstat)    
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(WORKDIR,"diffPeaks/diffPeaks/qstat.RAD21mutvsCTRL.upperQ0.95.cqn.2foldUp.txt"), sep = "\t", row.names=F, quote=FALSE)
+down.qstat <- subset(qstat$table, logFC < -1 & logCPM > 1 & FDR < .05)
+nrow(down.qstat)    
+down.pos <- merge(allpositions,down.qstat, by="row.names")
+write.table (down.pos, file = file.path(WORKDIR,"diffPeaks/qstat.RAD21mutvsCTRL.upperQ0.95.cqn.2foldDown.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+

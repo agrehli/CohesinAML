@@ -1,0 +1,81 @@
+--
+title: "PU1 Peak Set Enrichment in STAG-depleted HSPCs"
+author: "Alexander Fischer"
+date: "03 2023"
+output: html
+---
+
+# load libraries and paths
+```{r}
+library(edgeR)
+
+PROJECTDIR="/misc/data/analysis/project_cohesin/CD34"
+WORKDIR=file.path(PROJECTDIR,"ChIP_KD_analysis/Cohesin_CTCF_MED12")
+PEAKDIR=file.path(WORKDIR,"peaks")
+DIFFPEAKS=file.path(WORKDIR,"diffPeaks")
+```
+
+
+# calculate qlfs for differential PU1. peaks
+```{r}
+data <- read.delim(file.path(PEAKDIR,"CD34_PU1.stringentPeaks.ann.Rinput.txt", row.names="ID"))
+group <- factor(c(rep("CTRL",3),rep("SA2KD",4),rep("SA1KD",3)))
+batch <- factor(c(14,22,24,14,17,20,22,17,21,27))
+d <- DGEList(counts=data,group=group)
+d <- calcNormFactors(d)
+design <- model.matrix(~0 + group + batch)
+rownames(design) <- colnames(d)
+d <- estimateDisp(d, design, robust=TRUE)
+fit <- glmQLFit(d, design)
+
+conSA2 <- makeContrasts(groupSA2KD - groupCTRL, levels=design)
+qlfSA2 <- glmQLFTest(fit, contrast=conSA2)
+qstatSA2 <- topTags(qlfSA2, n=Inf)
+summary(qdt <- decideTestsDGE(qlfSA2, lfc=0.585))
+
+conSA1 <- makeContrasts(groupSA1KD - groupCTRL, levels=design)
+qlfSA1 <- glmQLFTest(fit, contrast=conSA1)
+qstatSA2 <- topTags(qlfSA1, n=Inf)
+summary(qdt <- decideTestsDGE(qlfSA1, lfc=0.585))
+
+```
+
+# peakset enrichments at RAD21 diff peaks
+```{r}
+#get peaksets and create indices
+RAD21diff_PU1_list<-list()
+KDs<-c("SA1KD","SA2KD")
+directions<-c("increased","decreased")
+for (KD in KDs){
+    for (dir in directions){
+RAD21diff_PU1_list[[paste0(KD,dir)]]<-read.table(file.path(DIFFPEAKS,paste0("PU1.stringentPeaks.at.",dir,"RAD21.",KD,"vsCTRL.bed")),header=F)
+RAD21diff_PU1_list[[paste0("ind",KD,dir)]]<-rownames(fit) %in% RAD21diff_PU1_list[[paste0(KD,dir)]]$V4
+}}
+#paired indices
+for (KD in KDs){
+RAD21diff_PU1_list[[paste0("ind",KD,"comb")]]<-list(RAD21diff_PU1_list[[paste0("ind",KD,"increased")]],RAD21diff_PU1_list[[paste0("ind",KD,"decreased")]])
+names(RAD21diff_PU1_list[[paste0("ind",KD,"comb")]])<-c("increasedRAD21","decreasedRAD21")
+}
+
+# run fry
+conlist<-list(conSA2,conSA1)
+names(conlist)<-KDs
+
+PSEAlist<-list()
+for (KD in KDs){
+PSEAlist[[KD]]<-fry(d, index=RAD21diff_PU1_list[[paste0("ind",KD,"comb")]], design=design, contrast=conlist[[KD]])
+}
+PSEAlist
+
+
+#results with stringent peaks
+#SA1KD
+#               NGenes Direction    PValue       FDR PValue.Mixed FDR.Mixed
+#increasedRAD21     10      Down 0.1248458 0.2496916    0.3260533 0.6521065
+#decreasedRAD21      3        Up 0.3128845 0.3128845    0.8511576 0.8511576
+
+#SA2KD
+#               NGenes Direction     PValue       FDR PValue.Mixed  FDR.Mixed
+#decreasedRAD21    963        Up 0.05507223 0.1101445   0.07211229 0.07550743
+#increasedRAD21      5        Up 0.99298350 0.9929835   0.07550743 0.07550743
+```

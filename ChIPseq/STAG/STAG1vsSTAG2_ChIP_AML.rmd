@@ -1,0 +1,319 @@
+---
+title: "Differential Analyis of STAG1 vs STAG2 ChIPseq data in Cohesin-wildtype CTRL-AMLs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+# paths and libraries
+```{r}
+PROJDIR<-"/misc/data/analysis/project_cohesin"
+WORKDIRCHIP<-file.path(PROJDIR,"Cohesin_AML/ChIP_analysis")
+ANNDIR=file.path(WORKDIRCHIP,"annotation_tables")
+FIGDIR=file.path(WORKDIRCHIP,"figures")
+DIFFDIR=file.path(WORKDIRCHIP,"diffPeaks","SA1vsSA2")
+DIFFDIRRAD21=file.path(WORKDIRCHIP,"diffPeaks")
+STAGDOMCD34DIR<-file.path(PROJDIR,"CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12/diffPeaks/SA1vsSA2")
+
+library(edgeR)
+library(ggplot2)
+library(ggrepel)
+```
+
+# get data and define group vectors
+```{r}
+meta<-read.delim(file.path(WORKDIRCHIP,"Rad21_AML_meta.csv"),sep=",",header=TRUE)
+matchedCTRLpat<-c("ctr_16911", "ctr_18136", "ctr_18519", "ctr_19405", "ctr_19416" ,"ctr_21047")
+metamatched<-subset(meta,meta$shortID_vial %in% matchedCTRLpat)
+
+datastr <- read.delim(file.path(ANNDIR,"CTRL.AML.matched.SA1.SA2.strRAD21.peaks.ann.tab.filt.txt"), row.names=1)
+datareg <- read.delim(file.path(ANNDIR,"CTRL.AML.matched.SA1.SA2.RAD21.peaks.ann.tab.filt.txt"), row.names=1)
+
+group<-factor(c(rep("SA1",6),rep("SA2",6)),levels=c("SA1","SA2"))
+patient<-factor(c(rep(matchedCTRLpat,2)))
+sex<-factor(rep(metamatched$sex,2))
+NPM1<-factor(rep(metamatched$npm1,2))
+FLT3ITD<-factor(rep(metamatched$flt3itd,2))
+DNMT3<-factor(rep(metamatched$Dmut,2))
+RUNX1<-factor(rep(metamatched$RUNX1,2))
+
+colnames(data)<-paste0(group,patient)
+```
+
+# Analysis based on AML RAD21 peak-annotated data
+## edgeR contrast SA1 vs SA2 - annotated to AML RAD21 peaks (stringent/regular sets)
+```{r}
+#Stringent peak annotated
+##create dgelist object # include the patient ID as covariate for design
+d <- DGEList(counts=data,group=group)
+design <- model.matrix(~0 + group + patient)
+rownames(design) <- colnames(d)
+d <- calcNormFactors(d)
+d <- estimateDisp(d, design, robust=TRUE)
+fit <- glmQLFit(d, design)
+## contrasts and qlf test
+con <- makeContrasts(groupSA1-groupSA2, levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qstat <- topTags(qlf, n=Inf)
+write.table (qstat, file = file.path(DIFFDIR,"qstat.CTRL.AML.topQC.SA1vsSA2.strRAD21peak.ann.txt"), sep = "\t", quote=FALSE)
+summary(qs <- decideTestsDGE(qlf, lfc=1))
+
+
+#all RAD21 peak annotated
+##create dgelist object # include the patient ID as covariate for design
+d2 <- DGEList(counts=data,group=group)
+rownames(design) <- colnames(d2)
+d2 <- calcNormFactors(d2)
+d2 <- estimateDisp(d2, design, robust=TRUE)
+fit2 <- glmQLFit(d2, design)
+## qlf test
+qlf2 <- glmQLFTest(fit2, contrast=con)
+qstat2 <- topTags(qlf2, n=Inf)
+write.table (qstat2, file = file.path(DIFFDIR,"qstat.CTRL.AML.topQC.SA1vsSA2.RAD21.ann.txt"), sep = "\t", quote=FALSE)
+summary(qs <- decideTestsDGE(qlf2, lfc=1))
+```
+
+
+
+## Filter results for STAG Dominant or common positions
+```{r}
+statslist<-list()
+PTS=c("strRAD21","RAD21")
+for (p in PTS){
+PEAKcoords<-read.delim(file=file.path(ANNDIR,paste0("CTRL.AML.topQCpat.SA1.SA2.",p,".peaks.ann.filt.txt")),row.names=1)
+PEAKcoords<-PEAKcoords[,c(1:4)]
+SA2vsSA1edgeRresult<- read.delim(file=file.path(DIFFDIR,paste0("qstat.CTRL.AML.topQC.SA1vsSA2.",p,".ann.txt")),row.names=1)
+#add peak coordinates
+PEAKcoords<-subset(PEAKcoords, row.names(PEAKcoords) %in% row.names(SA2vsSA1edgeRresult))
+SA2vsSA1edgeRresult2<-merge(PEAKcoords,SA2vsSA1edgeRresult,by=0)
+row.names(SA2vsSA1edgeRresult2)<-SA2vsSA1edgeRresult2$Row.names
+SA2vsSA1edgeRresult2<-SA2vsSA1edgeRresult2[,-1]
+#subset for types of positions
+SA1up<-SA2vsSA1edgeRresult2[which(SA2vsSA1edgeRresult2$FDR < 0.05 & SA2vsSA1edgeRresult2$logFC > (1) ), ] #these are the STAG1 dominatnt sites
+write.table (SA1up,file = file.path(DIFFDIR,paste0("SA1vsSA2.CTRL.AML.RAD21.",p,".SA1dom.txt")), sep = "\t", row.names=T, quote=FALSE)
+SA1down<-SA2vsSA1edgeRresult2[ which(SA2vsSA1edgeRresult2$FDR < 0.05 & SA2vsSA1edgeRresult2$logFC < (-1) ), ] #these are the STAG2 dominatnt sites
+write.table (SA1down,file = file.path(DIFFDIR,paste0("SA1vsSA2.CTRL.AML.RAD21.",p,".SA2dom.txt")), sep = "\t", row.names=T, quote=FALSE)
+common<-subset(SA2vsSA1edgeRresult2,!(row.names(SA2vsSA1edgeRresult2) %in% row.names(SA1up) | row.names(SA2vsSA1edgeRresult2) %in% row.names(SA1down))) #the rest is treated as "common"
+write.table (common,file = file.path(DIFFDIR,paste0("SA1vsSA2.CTRL.AML.RAD21.",p,".common.txt")), sep = "\t", row.names=T, quote=FALSE)
+stats.df<-data.frame(row.names=c("STAG2dominated","STAG1dominated","common"),group=c("STAG2dominated","STAG1dominated","common"),number_of_peaks = c(nrow(SA1down),nrow(SA1up),nrow(common)))
+stats.df$prop<-stats.df$number_of_peaks/sum(stats.df$number_of_peaks)
+stats.df$ypos<- cumsum(stats.df$prop)- 0.5*stats.df$prop
+statslist[[p]]<-stats.df
+write.table(statslist[[p]],file=file.path(FIGDIR,paste0("STAGdom.sites.CTRL.AML.",p,".peakset.stats.txt")),quote=FALSE,sep="\t")
+}
+```
+
+
+## plot STAG dominance as piechart
+```{r}
+for (p in PTS){
+statslist[[paste0("pie",p)]]<-ggplot(statslist[[p]], aes(x="", y=prop, fill=group)) +
+  scale_fill_manual(values = c("STAG2dominated"="seagreen2","STAG1dominated"="darkgoldenrod","common"="grey"))+
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) + 
+  theme_void() +
+  #geom_text(aes(y = ypos, label = group), color = "white", size=6)
+  geom_text_repel(aes(label = group, y = ypos), 
+                   nudge_x = 0.05, nudge_y = 0.05,
+                   size = 5, show.legend = F)
+}
+for (p in PTS){
+ggsave(file=file.path(FIGDIR,paste0("STAGdom.sites.CTRL.AML.",p,".peakset.piechart.pdf")), height=6, width=6, plot=statslist[[paste0("pie",p)]])
+}
+```
+
+
+# Analysis based on AML differnatial RAD21 peak positions
+
+## read in peak sets
+```{r}
+CTCFcats<-c("withCTCF","noCTCF")
+FILTS<-c("up.FC1","down.FC1")
+allAMLRAD21_peaksets<-list()
+## read diffpeak positions by CTCF subsets (only SA2mut)
+for (CTCF in CTCFcats){
+  MUT="SA2mut"
+allAMLRAD21_peaksets[[paste0(MUT,"_strRAD21diffpeaks_up.FC1",CTCF)]]<-read.table(file.path(DIFFDIRRAD21,"subsetByCTCF",paste0(MUT,"vsCTRL.RAD21.stringentPeaks_DESEQ.model.2foldup.",CTCF,".txt")),header=FALSE)
+allAMLRAD21_peaksets[[paste0(MUT,"_strRAD21diffpeaks_down.FC1",CTCF)]]<-read.table(file.path(DIFFDIRRAD21,"subsetByCTCF",paste0(MUT,"vsCTRL.RAD21.stringentPeaks_DESEQ.model.2folddown.",CTCF,".txt")),header=FALSE)
+}
+```
+
+## set index
+```{r}
+for (filt in FILTS){
+for (CTCF in CTCFcats){
+MUT="SA2mut"
+allAMLRAD21_peaksets[[paste0("ind_",MUT,"_strRAD21diffpeaks_",filt,CTCF)]] <- rownames(fit) %in% allAMLRAD21_peaksets[[paste0(MUT,"_strRAD21diffpeaks_",filt,CTCF)]]$V1
+}}
+
+#combined index list for complete sets CTCF subsets
+
+allAMLRAD21_peaksets[[paste0("ind_SA2mut_strRAD21diffpeaks_byCTCF")]]<- list(
+allAMLRAD21_peaksets[["ind_SA2mut_strRAD21diffpeaks_up.FC1withCTCF"]],allAMLRAD21_peaksets[["ind_SA2mut_strRAD21diffpeaks_up.FC1noCTCF"]],
+allAMLRAD21_peaksets[["ind_SA2mut_strRAD21diffpeaks_down.FC1withCTCF"]],allAMLRAD21_peaksets[["ind_SA2mut_strRAD21diffpeaks_down.FC1noCTCF"]]
+)
+names(allAMLRAD21_peaksets[[paste0("ind_SA2mut_strRAD21diffpeaks_byCTCF")]])<-c("strengthenedRAD21_withCTCF","strengthenedRAD21_noCTCF","weakenedRAD21_withCTCF","weakenedRAD21_noCTCF")
+```
+
+
+## fry contrast for peaksets in CTRL-AML SA1vsSA2
+```{r}
+###all up/down sets separately
+fry_allAMLRAD21_peaksets<-list()
+fry_allAMLRAD21_peaksets[[paste0("ind_SA2mut_strRAD21diffpeaks_byCTCF")]]<-fry(ds, index=allAMLRAD21_peaksets[[paste0("ind_SA2mut_strRAD21diffpeaks_byCTCF")]], design=design, contrast=con)
+
+
+dir.create(file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA"))
+
+#barcode plot for the STAG preference at the RAD21 (stringent peak set) diffpeaks
+
+#for the stringent RAD21 diffpeaks
+for (KD in MUTs){
+cat<-"_strRAD21diffpeaks"
+pdf(file=file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA",paste0("edgeR_barcodeplot_SA1vsSA2_inCTRL_AMLs_",cat,"SA2mut",".pdf")), height=6, width=6)
+barcodeplot(qlf2$table$logFC, 
+            index=allAMLRAD21_peaksets[[paste0("ind_","SA2mut",cat,"_up.FC1")]] ,
+            index2=allAMLRAD21_peaksets[[paste0("ind_","SA2mut",cat,"_down.FC1")]],
+            labels=c("STAG2 dominance","STAG1 dominance"),
+            xlab = bquote(log[2]*"FC of SA1 vs SA2 in CTRL-AMLs"),
+            cex.axis = 1, 
+            main=paste0("SA2mut", ": STAG1 vs STAG2 at ", cat), cex.main=0.5,
+            col.bars=c("darkgoldenrod1","seagreen1"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('all RAD21 peaks strengthened '~'('*.(fry_allAMLRAD21_peaksets[[paste0("ind_","SA2mut", cat)]]["strengthenedRAD21","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(fry_allAMLRAD21_peaksets[[paste0("ind_","SA2mut", cat)]]["strengthenedRAD21","FDR"])*'('*.(fry_allAMLRAD21_peaksets[[paste0("ind_","SA2mut", cat)]]["strengthenedRAD21","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('all RAD21 peaks weakened  '~'('*.(fry_allAMLRAD21_peaksets[[paste0("ind_","SA2mut", cat)]]["weakenedRAD21","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(fry_allAMLRAD21_peaksets[[paste0("ind_","SA2mut", cat)]]["weakenedRAD21","FDR"])*'('*.(fry_allAMLRAD21_peaksets[[paste0("ind_","SA2mut", cat)]]["weakenedRAD21","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}
+```
+
+
+### Summarize stats for combined stringent RAD21 diffpeak by CTCF association
+```{r}
+fry_allAMLRAD21_peaksets3<-fry_allAMLRAD21_peaksets[[paste0("ind_SA2mut_strRAD21diffpeaks_byCTCF")]]
+#prepare table for plotting
+##negative log FDR (positive value)
+fry_allAMLRAD21_peaksets3$logFDR<--log(fry_allAMLRAD21_peaksets3$FDR)
+fry_allAMLRAD21_peaksets3$logFDR<--log(fry_allAMLRAD21_peaksets3$FDR)
+##for down direction use log FDR (negativ value)
+fry_allAMLRAD21_peaksets3$logFDR[fry_allAMLRAD21_peaksets3$Direction == "Down"] <- log(subset(fry_allAMLRAD21_peaksets3,Direction=="Down")[,"FDR"])
+fry_allAMLRAD21_peaksets3$logFDR[fry_allAMLRAD21_peaksets3$Direction == "Down"] <- log(subset(fry_allAMLRAD21_peaksets3,Direction=="Down")[,"FDR"])
+##define categories
+fry_allAMLRAD21_peaksets3$RAD21change<-strsplit2(rownames(fry_allAMLRAD21_peaksets3),"_",fixed = TRUE)[,1]
+fry_allAMLRAD21_peaksets3$CTCFassociation<-strsplit2(rownames(fry_allAMLRAD21_peaksets3),"_",fixed = TRUE)[,2]
+##set levels
+fry_allAMLRAD21_peaksets3$RAD21change<-factor(fry_allAMLRAD21_peaksets3$RAD21change,levels=c("weakenedRAD21","strengthenedRAD21"))
+fry_allAMLRAD21_peaksets3$CTCFassociation<-factor(fry_allAMLRAD21_peaksets3$CTCFassociation,levels=c("withCTCF","noCTCF"))
+write.table(fry_allAMLRAD21_peaksets3,file=file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA","PSEA.SA1vsSA2_inCTRL_AMLs_strRAD21.diffpeaks.byCTCF.txt"),sep="\t",quote=FALSE)
+
+
+
+#plot
+p1<-ggplot(fry_allAMLRAD21_peaksets3, aes(x= logFDR, y= rownames(fry_allAMLRAD21_peaksets3),fill = RAD21change)) +
+geom_bar(aes(colour=CTCFassociation),size=1.5, width=0.8, position = position_dodge(width=0.5), stat="identity") +
+  scale_fill_manual(values = c("strengthenedRAD21"="seagreen","weakenedRAD21"="firebrick3"))+
+  scale_color_manual(values = c("withCTCF"="darkblue","noCTCF"="orange"))+
+  scale_x_continuous(limits = c(-10,10),labels=abs,breaks = seq(-10,10,by=2.5)) + 
+  xlab("- log2 FDR of SA1 vs SA2 PSEA in CTRL-AMLs") + ylab(" ") + 
+  ggtitle(paste0("Differential RAD21 peaks in SA2mut")) +
+  theme(
+  axis.text.x = element_text(angle=0,vjust=0.2,size=16),
+  legend.text = element_text(angle=0,vjust=0.2,size=16),
+  axis.text.y = element_text(angle=0,hjust=0.95,vjust=0.2,size=0),
+  legend.position="bottom", legend.title=element_blank(),
+  axis.title=element_text(size=16,face="bold"), plot.title = element_text(size = 20, face = "bold",hjust = 0.5), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.line.x = element_line(colour = "black"),)+
+geom_vline(xintercept = -log2(0.05),linetype = 'dashed') + 
+geom_vline(xintercept = log2(0.05),linetype = 'dashed',color="black")+
+geom_text(aes(x=-8,y=4,label="SA2 dominant"),size=4,vjust=0.2,fontface = "bold")+
+geom_text(aes(x=8,y=4,label="SA1 dominant"),size=4,vjust=0.2,fontface = "bold")
+
+pdf(file=file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA",paste0("SA2mut.SA1vsSA2_inCTRL_AMLs.PSEA.summary.DIFF.RAD21peaks.stringent.pdf")), height=6, width=6)
+plot(p1)
+dev.off()
+```
+
+
+
+
+# Analysis based on HSPC RAD21 peak-annotated data
+## edgeR contrast SA1 vs SA2 - annotated to: all CD34 RAD21 pos. peak set
+```{r}
+#all RAD21 peak set including X and Y chrom (test for 1:1 comparability?)
+dataCD34ann <- read.delim(file.path(WORKDIRCHIP,"annotation_tables","CTRL.AML.matched.SA1.SA2.CD34RAD21.peaks.ann.txt"), row.names=1)
+dataCD34ann <-dataCD34ann[,c(19:30)]
+colnames(dataCD34ann)<-paste0(group,patient)
+#create dgelist object and filter # include the patient ID as covariate for design
+dCD34ann <- DGEList(counts=dataCD34ann,group=group)
+design <- model.matrix(~0 + group + patient)
+rownames(design) <- colnames(dCD34ann)
+dCD34ann <- calcNormFactors(dCD34ann)
+dCD34ann <- estimateDisp(dCD34ann, design, robust=TRUE)
+fitCD34ann <- glmQLFit(dCD34ann, design)
+con <- makeContrasts(groupSA1-groupSA2, levels=design)
+qlfCD34ann <- glmQLFTest(fitCD34ann, contrast=con)
+qstatCD34ann <- topTags(qlfCD34ann, n=Inf)
+summary(qs <- decideTestsDGE(qlfCD34ann, lfc=1))
+#       1*groupSA1 -1*groupSA2
+#Down                     7195
+#NotSig                  65884
+#Up                       5788
+```
+
+## get STAG1/2 dominant sites from CD34+ HSPC analyis
+```{r}
+###read data
+CD34_STAG_DOM_list<-list()
+CD34_STAG_DOM_list[["common"]]<-read.table(file.path(STAGDOMCD34DIR,"SA2vsSA1.allCD34.RAD21.peaks_edgeR.common.txt"))
+CD34_STAG_DOM_list[["SA1dom"]]<-read.table(file.path(STAGDOMCD34DIR,"SA2vsSA1.allCD34.RAD21.peaks_edgeR.2folddown.txt"))
+CD34_STAG_DOM_list[["SA2dom"]]<-read.table(file.path(STAGDOMCD34DIR,"SA2vsSA1.allCD34.RAD21.peaks_edgeR.2foldup.txt"))
+###create indices
+STAGprefs<-c("common","SA1dom","SA2dom")
+for (pref in STAGprefs){
+CD34_STAG_DOM_list[[paste0("ind_",pref)]]<- rownames(fitCD34ann) %in% row.names(CD34_STAG_DOM_list[[pref]])
+}
+###create combined index
+CD34_STAG_DOM_list[["ind_comb"]]<-list(CD34_STAG_DOM_list[[paste0("ind_","common")]],CD34_STAG_DOM_list[[paste0("ind_","SA1dom")]],CD34_STAG_DOM_list[[paste0("ind_","SA2dom")]])
+names(CD34_STAG_DOM_list[["ind_comb"]])<-STAGprefs
+```
+## enrichment of HSPC STAG dom/common in AML STAG contrast
+```{r}
+dir.create(file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA"))
+#Peak set enrichment using limma fry
+CD34_STAG_DOM_GSEA<-fry(dCD34ann, index=CD34_STAG_DOM_list[["ind_comb"]], design=design, contrast=con)
+CD34_STAG_DOM_GSEA
+#       NGenes Direction       PValue          FDR PValue.Mixed    FDR.Mixed
+#SA1dom   2056        Up 0.0001343637 0.0003760395 1.776001e-05 1.776001e-05
+#SA2dom   1319      Down 0.0002506930 0.0003760395 1.770371e-05 1.776001e-05
+#common  75492        Up 0.0370522388 0.0370522388 6.115183e-06 1.776001e-05
+write.table(CD34_STAG_DOM_GSEA,file=file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA","PSEA.SA1vsSA2_inCTRL_AMLs_STAGdominant_sites_inCD34.txt"),sep="\t",quote=FALSE)
+
+#generate peak set enrichment barcodeplot showing the fry statistics in plot
+pdf(file=file.path(WORKDIRCHIP,"figures","SA1vsSA2_PSEA",paste0("edgeR_barcodeplot_SA1vsSA2_inCTRL_AMLs_STAGdominant_sites_inCD34.pdf")), height=6, width=6)
+barcodeplot(qlfCD34ann$table$logFC, 
+            index=CD34_STAG_DOM_list[["ind_SA1dom"]] ,
+            index2=CD34_STAG_DOM_list[["ind_SA2dom"]],
+            labels=c("STAG2 dominance","STAG1 dominance"),
+            xlab = bquote(log[2]*"FC of SA1 vs SA2 in CTRL-AMLs"),
+            cex.axis = 0.5, 
+            main=paste0("CTRL-AML: STAG1 vs STAG2 \n at postions with STAG dominace in HSPCs"), cex.main=0.5,
+            col.bars=c("darkgoldenrod3","seagreen3"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('STAG1 dominated in HSPCs '~'('*.(CD34_STAG_DOM_GSEA["SA1dom","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(CD34_STAG_DOM_GSEA["SA1dom","FDR"])*'('*.(CD34_STAG_DOM_GSEA["SA1dom","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('STAG2 dominated in HSPCs  '~'('*.(CD34_STAG_DOM_GSEA["SA2dom","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(CD34_STAG_DOM_GSEA["SA2dom","FDR"])*'('*.(CD34_STAG_DOM_GSEA["SA2dom","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+```

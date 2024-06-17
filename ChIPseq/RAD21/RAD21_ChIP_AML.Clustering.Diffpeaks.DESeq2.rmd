@@ -1,0 +1,245 @@
+---
+title: "Differential Analyis and Clustering of RAD21 ChIPseq data of Cohesin AMLs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+
+# Load libraries and data
+```{r}
+#load libraries
+library(DESeq2)
+library(ggplot2)
+library(umap)
+library(ggrepel)
+library(dplyr)
+
+#set paths
+DIR_DATA="/misc/data"
+WORKDIR<-file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis")
+FIGDIR=file.path(WORKDIR,"figures")
+dir.create(file.path(FIGDIR,"Clustering"))
+#read in counts, metadata and peak coordinates
+metadata <- read.csv(file.path(WORKDIR,"Rad21_AML_meta.csv"),row.names="X...ChIP.ID")
+
+peaks <- read.delim(file.path(WORKDIR,"annotation_tables","RAD21.filtered.peaks.Rinput.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+
+peaksstr <- read.delim(file.path(WORKDIR,"annotation_tables","RAD21_stringent.filtered.peaks.Rinput.txt"), header=F)
+colnames(peaksstr) <- c("ID","chr","start","stop","strand","NA")
+
+counts<- read.table(file=file.path(WORKDIR,"annotation_tables","Allpat_RAD21.peaks.ann.filt.Rinput.txt"), header=T, sep="\t", row.names=1)
+colnames(counts) <- rownames(metadata)
+countsstr<- read.table(file=file.path(WORKDIR,"annotation_tables","Allpat_RAD21.peaks.stringent.ann.filt.Rinput.txt"), header=T, sep="\t", row.names=1)
+colnames(countsstr) <- rownames(metadata)
+```
+
+# DESeq2 Analysis based on stringent RAD21 peaks set 
+###NOTE: these results are used for differntial peaks and clustering of samples
+```{r}
+##integer conversion
+i<-c(1:ncol(countsstr)) #125140
+countsstr[ , i] <- apply(countsstr[ , i], 2,
+                    function(x) as.integer(x))
+##create  Deseq count table with design accounting for most frequent co-mut present in all groups
+ddsFullCountTable2 <- DESeqDataSetFromMatrix(
+countData = countsstr,
+colData = metadata,
+design = ~ npm1 + sex + flt3itd + RUNX1 + group)
+##ensure CTRL group is used as reference point for statistics
+ddsFullCountTable2$group<-relevel(ddsFullCountTable2$group, ref = "ctr")
+dds2 <- DESeq(ddsFullCountTable2)
+##summarize results
+resRad21_mod<-results(dds2, contrast=c("group","Rad21","ctr"))
+resSA2_mod<-results(dds2, contrast=c("group","SA2","ctr"))
+#count diffpeaks
+diffpeaks<-data.frame()
+diffpeaks["total","SA2mutvsCTRL_model"]<-nrow(resSA2_mod[ which(resSA2_mod$padj < 0.05 ), ])
+diffpeaks["downFC2","SA2mutvsCTRL_model"]<-nrow(resSA2_mod[ which(resSA2_mod$padj < 0.05 & resSA2_mod$log2FoldChange < (-1) ), ])
+diffpeaks["upFC2","SA2mutvsCTRL_model"]<-nrow(resSA2_mod[ which(resSA2_mod$padj < 0.05 & resSA2_mod$log2FoldChange > (1) ), ])
+diffpeaks["total","RAD21mutvsCTRL_model"]<-nrow(resRad21_mod[ which(resRad21_mod$padj < 0.05 ), ])
+diffpeaks["downFC2","RAD21mutvsCTRL_model"]<-nrow(resRad21_mod[ which(resRad21_mod$padj < 0.05 & resRad21_mod$log2FoldChange < (-1) ), ])
+diffpeaks["upFC2","RAD21mutvsCTRL_model"]<-nrow(resRad21_mod[ which(resRad21_mod$padj < 0.05 & resRad21_mod$log2FoldChange > (1) ), ])
+diffpeaks #show values
+write.table (diffpeaks, file = file.path(WORKDIR,"diffPeaks/DESEQ.models.stringentPeaks.results.compared.txt"), sep = "\t", row.names=T, quote=FALSE)
+```
+
+
+# write result tables using the model with RUNX1 FLT3 NPM1 sex
+```{r}
+#get peak postions
+allpositions <- peaksstr[,-1]
+rownames(allpositions) <- peaksstr[,1]
+#write tables and merge with peak coordinates
+
+#RAD21mut results
+write.table (resRad21_modA, file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf2<-read.table (file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), sep = "\t")
+all.pos<-merge(allpositions,resdf2, by="row.names")
+all.posord<-all.pos[order(all.pos$padj, decreasing = FALSE), ]
+write.table (all.posord,file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+# also write filtered results to table containing only the diff peaks
+Rad21up<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange > (1) ), ]
+write.table (Rad21up,file = file.path(WORKDIR,"diffPeaks/Rad21mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.2foldup.txt"), sep = "\t", row.names=F, quote=FALSE)
+Rad21down<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange < (-1) ), ]
+write.table (Rad21down,file = file.path(WORKDIR,"diffPeaks/Rad21mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.2folddown.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+#SA2mut results
+write.table (resSA2_modA, file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf3<-read.table (file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), sep = "\t",header=T,row.names=1)
+all.pos<-merge(allpositions,resdf3, by="row.names")
+all.posord<-all.pos[order(all.pos$padj, decreasing = FALSE), ]
+write.table (all.posord,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+#also write filtered results to table
+SA2up<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange > (1) ), ]
+write.table (SA2up,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.2foldup.txt"), sep = "\t", row.names=F, quote=FALSE)
+SA2down<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange < (-1) ), ]
+write.table (SA2down,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.2folddown.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+
+
+## include norm. counts for clustering
+row.names(all.posord)<-all.posord$Row.names
+all.posord<-all.posord[, -1]
+normcounts<-counts(dds2, normalized=T)
+all.posordcounts<-merge(all.posord,normcounts, by=0)
+write.table (all.posordcounts,file = file.path(WORKDIR,"diffPeaks/RAD21.stringentPeaks_DESEQ.model.normcounts.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+
+# Clustering of DESEQ-normalized counts using UMAP (based on stringent peakset data)
+```{r}
+#FIGDIR=file.path(WORKDIR,"figures","clustering","DESEQmodelNorm")
+###Read in data
+data <- read.delim(file.path(WORKDIR,"diffPeaks","RAD21.stringentPeaks_DESEQ.model.normcounts.txt"), row.names=1)
+data<-data[, -c(1:11)]
+colnames(data)<-metadata$shortID_patID
+group<-factor(metadata$group,levels=c("ctr", "SA2", "Rad21"))
+
+#set seed for reproducibility
+set.seed(seed = 42)
+  #appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat2<-umap::umap(t(as.matrix(data)))
+  umap.dat2<-data.frame(umap.dat2$layout)
+  #add metadata information on factors to display in plot
+  umap.dat2$group<-group
+  umap.dat2$VialID<-factor(metadata$shortID_vial)
+  umap.dat2$patID<-factor(metadata$shortID_patID)
+  umap.dat2$NPM1mut<-factor(metadata$npm1)
+  umap.dat2$RUNX1mut<-factor(metadata$RUNX1)
+  umap.dat2$ASXL1mut<-factor(metadata$ASXL1)
+  umap.dat2$SRSF2mut<-factor(metadata$SRSF2)
+  umap.dat2$flt3idt<-factor(metadata$flt3itd,levels=c("pos","neg"))
+  umap.dat2$HiCstatus<-factor(metadata$HIC)
+  umap.dat2$sex<-factor(metadata$sex)
+  umap.dat2$cohesin_perc_mut<-factor(metadata$cohesin_perc_mut)
+  umap.dat2$SRSF2mutASXL1mut<-paste0(umap.dat2$SRSF2mut,umap.dat2$ASXL1mut)
+  umap.dat2$NPM1mutRUNX1mut<-paste0(umap.dat2$NPM1mut,umap.dat2$RUNX1mut)
+  umap.dat2$NPM1mutASXL1mut<-paste0(umap.dat2$NPM1mut,umap.dat2$ASXL1mut)
+  umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mut<-paste0(umap.dat2$NPM1mutRUNX1mut,umap.dat2$SRSF2mutASXL1mut)
+  umap.dat2$NPM1mutRUNX1mut<-factor(umap.dat2$NPM1mutRUNX1mut,levels=c("posneg","negpos","negneg"))
+  umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mut<-factor(umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mut,levels=c("posnegnegneg", "negnegnegneg","negnegposneg","negnegpospos","negposnegneg","negpospospos"))
+  umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mutFLT3ITDmut<-paste0(umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mut,  umap.dat2$flt3idt)
+  umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mutFLT3ITDmut<-factor(umap.dat2$NPM1mutRUNX1mutSRSF2mutASXL1mutFLT3ITDmut,
+  levels=c("posnegnegnegneg","posnegnegnegpos", "negnegnegnegpos","negnegnegnegneg","negnegposnegpos","negnegposnegneg","negnegposposneg","negposnegnegneg","negposposposneg","negposnegnegpos"))
+              #only npm        #npm flt           #only flt        #none            #SRSF2 +flt3itd        #SRSF2 only       #RUNX only       #RUNX+S+A         #RUNX+flt
+
+#hiC pat subset
+  umap.dat2HICPaT<-umap.dat2 %>% filter(HiCstatus ==1)
+
+
+##Visualize cohesin status, FLT3-ITD, NPM1, RUNX1 using the filled shapes so the outline serves as additional encoding
+ umap.p<-ggplot(data =umap.dat2)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-3.4,3.4)) +
+    scale_y_continuous(limits = c(-1.8,1.8))+    
+    geom_point(size=12,aes(fill=group,colour=flt3idt,shape=NPM1mutRUNX1mut,stroke = flt3idt))+
+    scale_fill_manual(values = c("ctr" = "firebrick", "SA2" = "seagreen","Rad21"="mediumvioletred"),labels=c("CTRL-AML","STAG2mut","RAD21mut")) +
+    scale_color_manual(values = c("pos" = "darkorange", "neg" = "azure3"),labels=c("pos","neg"),name="FLT3-ITD mut") +
+    scale_discrete_manual(aesthetics = "stroke", values = c("pos" = 2, "neg" = 0),guide=FALSE)+
+    scale_shape_manual(values = c("posneg" = 24,"negpos"=22, "negneg" = 21), name="Co-Mutation",
+    labels=c("NPM1","RUNX1","none shown")) +
+    #geom_text_repel(aes(label=metadata$shortID_patID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    #geom_text_repel(data= umap.dat2HICPaT, aes(label=VialID),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP RAD21 peaks Cohesin AML")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = 12, face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = 12, face = "plain"),
+          legend.title = element_text(colour="black", size = 12, face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = 12, face = "plain"),
+          axis.title = element_text(colour = "black",size = 12,face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0,
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIR,"Clustering","UMAP_RAD21stringentPeaks.allpat.nolab.mutsindicated3.DESEQ.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
+
+
+# DESeq2 Analysis based on standard RAD21 peaks set 
+###NOTE: these results are used for enrichment/correlation analyses where the larger, 
+###less stringently called RAD21 peak set was required. i.e. the integration of RAD21 with loop Anhcors coordinates
+```{r}
+##integer conversion
+i<-c(1:ncol(counts))
+counts[ , i] <- apply(counts[ , i], 2, 
+                    function(x) as.integer(x))
+
+##create  Deseq count table with design accounting for most frequent co-mut present in all groups
+ddsFullCountTable2A <- DESeqDataSetFromMatrix(
+countData = counts,
+colData = metadata,
+design = ~ npm1 + sex + flt3itd + RUNX1 + group)
+##ensure CTRL group is used as reference point for statistics
+ddsFullCountTable2A$group<-relevel(ddsFullCountTable2A$group, ref = "ctr")
+dds2A <- DESeq(ddsFullCountTable2A)
+##summarize results
+resRad21_modA<-results(dds2A, contrast=c("group","Rad21","ctr"))
+resSA2_modA<-results(dds2A, contrast=c("group","SA2","ctr"))
+
+# write result tables
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+#RAD21mut
+write.table (resRad21_modA, file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf2<-read.table (file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"), sep = "\t")
+all.pos<-merge(allpositions,resdf2, by="row.names")
+all.posord<-all.pos[order(all.pos$padj, decreasing = FALSE), ]
+write.table (all.posord,file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+#also write filtered results to table
+Rad21up<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange > (1) ), ]
+write.table (Rad21up,file = file.path(WORKDIR,"diffPeaks/Rad21mutvsCTRL.RAD21.Peaks_DESEQ.model.2foldup.txt"), sep = "\t", row.names=F, quote=FALSE)
+Rad21down<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange < (-1) ), ]
+write.table (Rad21down,file = file.path(WORKDIR,"diffPeaks/Rad21mutvsCTRL.RAD21.Peaks_DESEQ.model.2folddown.txt"), sep = "\t", row.names=F, quote=FALSE)
+#SA2mut
+write.table (resSA2_modA, file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf3<-read.table (file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"), sep = "\t",header=T,row.names=1)
+all.pos<-merge(allpositions,resdf3, by="row.names")
+all.posord<-all.pos[order(all.pos$padj, decreasing = FALSE), ]
+write.table (all.posord,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+##also write filtered results to table
+SA2up<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange > (1) ), ]
+write.table (SA2up,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.Peaks_DESEQ.model.2foldup.txt"), sep = "\t", row.names=F, quote=FALSE)
+SA2down<-all.posord[ which(all.posord$padj < 0.05 & all.posord$log2FoldChange < (-1) ), ]
+write.table (SA2down,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.RAD21.Peaks_DESEQ.model.2folddown.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+
+#results with norm. counts
+row.names(all.posord)<-all.posord$Row.names
+all.posord<-all.posord[, -1]
+normcounts<-counts(dds2A, normalized=T)
+all.posordcounts<-merge(all.posord,normcounts, by=0)
+write.table (all.posordcounts,file = file.path(WORKDIR,"diffPeaks/RAD21.peaks.DESEQ.model.normcounts.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+

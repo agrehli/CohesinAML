@@ -1,0 +1,195 @@
+---
+title: "Downstream Analyses for HSPC scRNAseq SA2KO CRISPR"
+author: "Alexander Fischer"
+date: "JUL 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load libraries and seurat object
+```{r,echo=FALSE}
+rm(list = ls())
+library(Seurat)
+library(ggpubr)
+library(tidyverse)
+library(plyr)
+library(ggplot2)
+library(cowplot)
+library(ggExtra)
+library(harmony)
+library(WriteXLS)
+library(Nebulosa)
+library(SCpubr)
+
+workdir<- "/misc/data/analysis/project_cohesin/CD34/scRNAseq/"
+Clusters<-readRDS(file.path(workdir,"demultiplexed_rds_objects/CD34_NCKO_results/CD34_NCKO_integrated_FinalObject.rds"))
+```
+
+
+## Define Colors
+```{r}
+cluster_cols <- c("HSC" = "#ECA809",                    # Prussian Blue.
+                  "NEUT" = "#043362",                    # Prussian Blue.
+                  "MAST" = "#009FF5",                     # Carolina Blue.
+                  "MONO" = "#BC5210",            # Burnt Orange.
+                  "BCELL" = "#e9d8a6",                  # Celadon Green.
+                  "GMP" = "#7EB356",                   # Bud Green.
+                  "ERY" = "#AC70FF",                   # Medium Purple.
+                  "CLP" = "#63412C",                   # Van Dyke Brown.
+                  "MACDC" = "#D6D6D6")
+```
+
+## dimplot showing annotated clusters in defined colors
+```{r}
+pd<-DimPlot(Clusters,group.by = "Subclusters", pt.size = 1) +
+scale_color_manual(values = cluster_cols) +
+ggtitle("")+
+theme_void()+
+theme(
+  legend.text=element_text(size=24),
+  legend.position="bottom",
+)
+ggsave(file.path(workdir,"DimPlot_Subcl.highlighted.pdf"),plot=pd, width = 8, height = 5)
+```
+
+## Barplot to show cluster distribution
+### by condition (group)
+```{r,echo=FALSE, fig.width=12, fig.height=10}
+dir.create(file.path(workdir,"plots/barplots/"))
+barplotgroup<-ggplot(Clusters@meta.data, aes(x=group, fill=Subclusters)) + geom_bar(position = "fill") + scale_fill_manual(values=c("#BC3C29FF", "#0072B5FF", "#E18727FF","#20854EFF", "#7876B1FF", "#6F99ADFF","#FFDC91FF" ,"#EE4C97FF", "grey"))  + 
+    theme(text = element_text(size = 20))
+ggsave(file.path(workdir,"plots/barplots/bygroup.pdf"),plot=barplotgroup,height=4,width=6)
+
+##use clustering color scheme #without legend
+barplotgroup<-ggplot(Clusters@meta.data, aes(x=group, fill=Subclusters)) + geom_bar(position = "fill",width=1,color="black") + scale_fill_manual(values=cluster_cols) +
+ylab("Proportion of Cells") + xlab("") +
+scale_x_discrete(labels=c("CTRL\ngRNA","STAG2\nKO")) +
+theme(
+  axis.text.x = element_text(size=24),
+  axis.text.y = element_text(size=16,face="bold"),
+  legend.position="none",
+  axis.title=element_text(size=16,face="bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+ggsave(file.path(workdir,"plots/barplots/bygroup2.pdf"),plot=barplotgroup,height=4,width=3.5)
+
+
+```
+
+### by donor + condition (ID)
+```{r,echo=FALSE, fig.width=12, fig.height=10}
+ggplot(Clusters@meta.data, aes(x=ID, fill=Subclusters)) + geom_bar(position = "fill") + scale_fill_manual(values=c("#BC3C29FF", "#0072B5FF", "#E18727FF","#20854EFF", "#7876B1FF", "#6F99ADFF","#FFDC91FF" ,"#EE4C97FF", "grey"))  + 
+    theme(text = element_text(size = 16))
+
+##use clustering color scheme #without legend
+barplotID<-ggplot(Clusters@meta.data, aes(x=ID, fill=Subclusters)) + geom_bar(position = "fill",width=1,color="black") + scale_fill_manual(values=cluster_cols) +
+ylab("Proportion of Cells") + xlab("") +
+scale_x_discrete(labels=c("CTRL\ngRNA 1","CTRL\ngRNA 2","STAG2\nKO 1","STAG2\nKO 2")) +
+theme(
+  axis.text.x = element_text(size=12),
+  axis.text.y = element_text(size=16,face="bold"),
+  legend.position="none",
+  axis.title=element_text(size=16,face="bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+  axis.line = element_line(colour = "black"),)
+ggsave(file.path(workdir,"plots/barplots/byID.pdf"),plot=barplotID,height=4,width=4)
+
+
+```
+
+### table of cluster distribution 
+####can be used for scCODA analysis of cell distribution by cluster
+```{r}
+clustdistr.sum<-table(Clusters@meta.data$ID,Clusters@meta.data$Subclusters)
+write.csv(clustdistr.sum,file.path(workdir,"custerdistribution.summary.csv"))
+```
+
+## Projection of genes of interest
+```{r,echo=FALSE, fig.width=18, fig.height=18}
+
+dir.create(file.path(workdir,"plots"))
+dir.create(file.path(workdir,"plots","Densityplots"))
+#Genes of interst
+GOIs = c("ITGA9","SOCS2","NPR3","DACT1","SMYD3","MEF2C","KLF4","HDAC9","LRRC8C","SLC38A1","SLC39A10","VAV3","HTR1F")
+pGOIS <- plot_density(Clusters, GOIs) + plot_layout(ncol = 6)
+ggsave(file.path(workdir,"plots/Densityplots/GOIsHICassociated.pdf"),plot=pGOIS,height=12,width=30)
+pGOIS
+
+#Marker genes
+markersHSC<-c("KIT","CD34","PROM1","ABCG2","CD93","ETV6","PTEN","GATA2","MCL1","GFI1","BMI1","HOXB4","THY1","MME","FLT3","CDCP1","CXCR4") #not found: "STAT5"
+markersMYELOID<-c("CD14","CD1C","CD33","CD36","CEACAM8","FCGR1A","MPO","ANPEP","ITGAM","FUT4","FCGR3A","FCGR2A","ITGB2","PTPRC","CD44","SELL","CD4","CD38","ITGAX")
+markersery<-c("TFRC","GYPA","HBA1","HBA2","HBB","HBD","HBG1","HBG2") #CD71 = TFRC
+
+pHSC <- plot_density(Clusters, markersHSC) + plot_layout(ncol = 6)
+ggsave(file.path(workdir,"plots/Densityplots/CellmarkersHSC.pdf"),plot=pHSC,height=16,width=30)
+pMYE <- plot_density(Clusters, markersMYELOID) + plot_layout(ncol = 6)
+ggsave(file.path(workdir,"plots/Densityplots/CellmarkersMYELOID.pdf"),plot=pMYE,height=20,width=30)
+pERY <- plot_density(Clusters, markersery) + plot_layout(ncol = 6)
+ggsave(file.path(workdir,"plots/Densityplots/CellmarkersERY.pdf"),plot=pERY,height=12,width=30)
+
+#selected markers for panel in paper
+markers2<-c("CD34","CD14","CEACAM8","CD36")
+p5a <- plot_density(Clusters, markers2) + plot_layout(ncol = 2) #+ xlab("") + ylab("") + theme(plot.title = element_text(size=10,face="italic"),legend.text = element_text(size=6)) +
+##note: modifiying plots with basic ggplot options only modifies the last panel??
+ggsave(file.path(workdir,"plots/Densityplots/Cellmarkers2.pdf"),plot=p5a,height=4,width=6)
+
+#selected markers for panel in thesis
+markers3<-c("CD34","CD14","CEACAM8","CD36","FUT4","ITGAM","GYPA","CD33","KIT")
+p5b <- plot_density(Clusters, markers3) + plot_layout(ncol = 3)
+ggsave(file.path(workdir,"plots/Densityplots/Cellmarkers3.pdf"),plot=p5b,height=6,width=10)
+
+
+#cohesin components
+CohCompCore=c("STAG2","STAG1","RAD21","SMC1A","SMC3")
+p5c <- plot_density(Clusters, CohCompCore) + plot_layout(ncol = 5)
+ggsave(file.path(workdir,"plots/Densityplots/Cohcomponents.pdf"),plot=p5c,height=4,width=12)
+
+
+```
+
+
+
+## hightlight sample IDs in umap 
+```{r}
+Clusters@meta.data$hash.ID
+pd<-DimPlot(Clusters,group.by = "hash.ID",)
+ggsave(file.path(workdir,"DimPlot_IDs.highlighted.pdf"),plot=pd)
+
+
+#cluster_cols <- c("Sample1" = "firebrick1",      
+#                  "Sample2" = "darkblue")
+
+pd<-DimPlot(Clusters,group.by = "hash.ID", pt.size = 1) +
+scale_color_manual(values = c("Sample1" = "pink", "Sample2" = "deepskyblue4"),labels = c("CTRL gRNA", "STAG2 KO")) +
+ggtitle("")+
+theme_void()+
+theme(
+  legend.text=element_text(size=24),
+  legend.position=c(.8,.2),
+)
+
+
+
+ggsave(file.path(workdir,"DimPlot_IDs.highlighted.pdf"),plot=pd, width = 10, height = 5)
+
+
+my_cols = c("firebrick1","deepskyblue4")
+
+pd<-DimPlot(Clusters,group.by = "hash.ID", pt.size = 1,cols=alpha(my_cols,c(0.2,1))) +
+ggtitle("")+
+theme_void()+
+theme(
+  legend.text=element_text(size=24),
+  legend.position="bottom",
+)
+ggsave(file.path(workdir,"DimPlot_IDs.highlighted.2.pdf"),plot=pd, width = 8, height = 5)
+```

@@ -1,0 +1,177 @@
+---
+title: "Differential Analyis of STAG1 vs STAG2 ChIPseq data in Cohesin-wildtype HSPCs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+#load libraries
+library(edgeR)
+library(umap)
+library(ggplot2)
+library(ggrepel)
+
+#set paths
+DIR_DATA="/misc/data"
+WORKDIR<-file.path(DIR_DATA,"analysis/project_cohesin/CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12")
+DIFFPEAKS<-file.path(WORKDIR,"diffPeaks/SA1vsSA2")
+#load data
+data <- read.delim(file.path(WORKDIR,"CTRL_SA1S2A2_allCD34_RAD21pos.peaks.ann.Rinput.txt"), row.names="ID")
+peaks <- read.delim(file.path(WORKDIR,"peaks","CD34_RAD21.peaks.Rinput.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+#define group vectors
+group <- factor(c(rep("SA1",7), rep("SA2",7)))
+batch <- factor(c(14,14,17,21,21,22,28,14,14,17,18,21,22,28))
+```
+
+# edgeR analysis of STAG1 vs STAG2 ChIP in CTRL AMLs
+```{r}
+d <- DGEList(counts=data,group=group)
+d <- calcNormFactors(d)
+d$samples
+design <- model.matrix(~0 + group + batch)
+rownames(design) <- colnames(d)
+d <- estimateDisp(d, design, robust=TRUE)
+d$common.dispersion
+fit <- glmQLFit(d, design)
+con <- makeContrasts(groupSA1 - groupSA2, levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qstat <- topTags(qlf, n=Inf)
+write.table (qstat, file = file.path(DIFFPEAKS,"qstat_SA1vsSA2.allCD34.RAD21pos.peaks_edgeR.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlf, lfc=1))
+#       1*groupSA1 -1*groupSA2
+#Down                     1319
+#NotSig                  75492
+#Up                       2056
+
+# annotation with peak positions
+#all results
+all.pos <- merge(allpositions,qstat, by="row.names")
+write.table (all.pos, file = file.path(DIFFPEAKS,"qstat_SA1vsSA2.allCD34.RAD21pos.peaks_edgeR.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+
+
+# filter results to define STAG dominance
+```{r}
+p<-c("peaks_edgeR")
+#get results and filter by foldchange
+SA2vsSA1edgeRresult<- read.delim(file=file.path(DIFFPEAKS,paste0("qstat_SA1vsSA2.allCD34.RAD21pos.",p,".all.txt")),row.names=1)
+nrow(SA1up<-SA2vsSA1edgeRresult[ which(SA2vsSA1edgeRresult$FDR < 0.05 & SA2vsSA1edgeRresult$logFC > (1) ), ]) #2056 #STAG1 dominant positions
+write.table (SA1up,file = file.path(DIFFPEAKS,paste0("SA2vsSA1.allCD34.RAD21.",p,".2folddown.txt")), sep = "\t", row.names=T, quote=FALSE)
+nrow(SA1down<-SA2vsSA1edgeRresult[ which(SA2vsSA1edgeRresult$FDR < 0.05 & SA2vsSA1edgeRresult$logFC < (-1) ), ]) #1319 #STAG2 dominant positions
+write.table (SA1down,file = file.path(DIFFPEAKS,paste0("SA2vsSA1.allCD34.RAD21.",p,".2foldup.txt")), sep = "\t", row.names=T, quote=FALSE)
+nrow(common<-subset(SA2vsSA1edgeRresult,!(row.names(SA2vsSA1edgeRresult) %in% row.names(SA1up) | row.names(SA2vsSA1edgeRresult) %in% row.names(SA1down)))) #75492 #shared/common positions
+write.table (common,file = file.path(DIFFPEAKS,paste0("SA2vsSA1.allCD34.RAD21.",p,".common.txt")), sep = "\t", row.names=T, quote=FALSE)
+
+#summarize number of peaks
+stats.df<-data.frame(row.names=c("STAG2dominated","STAG1dominated","common"),group=c("STAG2dominated","STAG1dominated","common"),number_of_peaks = c(nrow(SA1down),nrow(SA1up),nrow(common)))
+stats.df$prop<-stats.df$number_of_peaks/sum(stats.df$number_of_peaks)
+stats.df$ypos<- cumsum(stats.df$prop)- 0.5*stats.df$prop
+#                        group number_of_peaks       prop
+#STAG2dominated STAG2dominated            1319 0.01672436
+#STAG1dominated STAG1dominated            2056 0.02606921
+#common                 common           75492 0.95720644
+write.table(stats.df,file = file.path(Diffpeakdir,paste0("SA2vsSA1.allCD34.RAD21.peaks.edgeR.piechart..stats.txt")), sep = "\t", row.names=T, quote=FALSE)
+```
+
+# plot STAG dominance as piechart
+```{r}
+pdf(file=file.path(WORKDIR,"figures","STAGdom.sites.piechart.pdf"), height=6, width=6)
+ggplot(stats.df, aes(x="", y=prop, fill=group)) +
+  scale_fill_manual(values = c("STAG2dominated"="seagreen2","STAG1dominated"="darkgoldenrod","common"="grey"))+
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) + 
+  theme_void() +
+  #geom_text(aes(y = ypos, label = group), color = "white", size=6)+
+  geom_text_repel(aes(label=group), col="black", segment.colour="black",segment.size=1, min.segment.length=5, point.padding=.5, segment.alpha=1, alpha=1, size=6)
+dev.off()
+```
+
+
+# Analysis based on HSPC differnatial RAD21 peak positions
+
+## get peaksets and set indices
+```{r}
+allCD34RAD21_peaksets<-list()
+STAGKDs<-c("SA2KD","SA1KD")
+FILTS<-c("up.FC1","down.FC1")
+#RAD21diffpeaks in HSPCs
+for (KD in STAGKDs){
+allCD34RAD21_peaksets[[paste0(KD,"_RAD21diffpeaks_up.FC1")]]<-read.table(file.path(DIFFRADDIR_CD34,paste0("qstat_",KD,"vsCTRL.RAD21.Peaks_edgeR.2foldUp.txt")),header=TRUE)
+allCD34RAD21_peaksets[[paste0(KD,"_RAD21diffpeaks_down.FC1")]]<-read.table(file.path(DIFFRADDIR_CD34,paste0("qstat_",KD,"vsCTRL.RAD21.Peaks_edgeR.2foldDown.txt")),header=TRUE)
+}
+
+
+#set index
+for (KD in STAGKDs){
+    for (filt in FILTS){
+allCD34RAD21_peaksets[[paste0("ind_",KD,"_RAD21diffpeaks_",filt)]]<- rownames(fit) %in% allCD34RAD21_peaksets[[paste0(KD,"_RAD21diffpeaks_",filt)]]$Row.names
+}}
+
+#combined index list for complete sets
+conds=c(STAGKDs, "SA2mut")
+for (KD in conds){
+allCD34RAD21_peaksets[[paste0("ind_",KD, "_RAD21diffpeaks")]]<- list(allCD34RAD21_peaksets[[paste0("ind_",KD,"_RAD21diffpeaks_up.FC1")]],allCD34RAD21_peaksets[[paste0("ind_",KD,"_RAD21diffpeaks_down.FC1")]])
+names(allCD34RAD21_peaksets[[paste0("ind_",KD, "_RAD21diffpeaks")]])<-c("strengthenedRAD21","weakenedRAD21")
+}
+
+```
+
+## fry contrast for peaksets
+```{r}
+fry_allCD34RAD21_peaksets<-list()
+for (KD in conds){
+fry_allCD34RAD21_peaksets[[paste0("ind_",KD, "_RAD21diffpeaks")]]<-fry(d, index=allCD34RAD21_peaksets[[paste0("ind_",KD, "_RAD21diffpeaks")]], design=design, contrast=con)
+}
+fry_allCD34RAD21_peaksets
+
+
+dir.create(file.path(WORKDIR,"figures","SA1vsSA2_PSEA"))
+#barcode plots for the RAD21 diffpeaks
+##### color by major preference
+cat<-"_RAD21diffpeaks"
+KD="SA1KD"
+pdf(file=file.path(WORKDIR,"figures","SA1vsSA2_PSEA",paste0("edgeR_barcodeplot_SA1vsSA2_inCTRLs",cat,KD,".2.pdf")), height=6, width=5)
+barcodeplot(qlf$table$logFC, 
+            index=allCD34RAD21_peaksets[[paste0("ind_",KD,cat,"_up.FC1")]] ,
+            index2=allCD34RAD21_peaksets[[paste0("ind_",KD,cat,"_down.FC1")]],
+            labels=c("STAG2 dominance","STAG1 dominance"),
+            xlab = bquote(log[2]*"FC of SA1 vs SA2 in CTRL-HPSPCs"),
+            cex.axis = 1, 
+            main=paste0(""), cex.main=0.5,
+            col.bars=c("seagreen1","darkgoldenrod1"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('all RAD21 peaks increased '~'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["strengthenedRAD21","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["strengthenedRAD21","FDR"])*'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["strengthenedRAD21","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('all RAD21 peaks decreased  '~'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["weakenedRAD21","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["weakenedRAD21","FDR"])*'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["weakenedRAD21","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+
+cat<-"_RAD21diffpeaks"
+KD="SA2KD"
+pdf(file=file.path(WORKDIR,"figures","SA1vsSA2_PSEA",paste0("edgeR_barcodeplot_SA1vsSA2_inCTRLs",cat,KD,".2.pdf")), height=6, width=5)
+barcodeplot(qlf$table$logFC, 
+            index=allCD34RAD21_peaksets[[paste0("ind_",KD,cat,"_up.FC1")]] ,
+            index2=allCD34RAD21_peaksets[[paste0("ind_",KD,cat,"_down.FC1")]],
+            labels=c("STAG2 dominance","STAG1 dominance"),
+            xlab = bquote(log[2]*"FC of SA1 vs SA2 in CTRL-HPSPCs"),
+            cex.axis = 1, 
+            main=paste0(""), cex.main=0.5,
+            col.bars=c("darkgoldenrod1","grey"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(5,5,bquote('all RAD21 peaks increased '~'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["strengthenedRAD21","NGenes"])*')'), adj = c(1,.3),cex=1)
+text(5,4.5,bquote(italic(P)[adj.]*"<"*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["strengthenedRAD21","FDR"])*'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["strengthenedRAD21","Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-5,-5,bquote('all RAD21 peaks decreased  '~'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["weakenedRAD21","NGenes"])*')'), adj = c(0,.5),cex=1)
+text(-5,-4.5,bquote(italic(P)[adj.]*"<"*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["weakenedRAD21","FDR"])*'('*.(fry_allCD34RAD21_peaksets[[paste0("ind_",KD, cat)]]["weakenedRAD21","Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+
+```

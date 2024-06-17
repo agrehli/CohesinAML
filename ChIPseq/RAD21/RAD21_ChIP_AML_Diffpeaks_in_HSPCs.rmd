@@ -1,0 +1,174 @@
+---
+title: "Differential Analyis of RAD21 peaks determined in Cohesin-AML in Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+#load libraries
+library(edgeR)
+library(gplots)
+
+#set paths
+PROJDIR<-"/misc/data/analysis/project_cohesin/"
+
+WORKDIR<-file.path(PROJDIR,"CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12/")
+DIFFPEAKS<-file.path(WORKDIR,"diffPeaks") #differntial peak in HSPCs
+AMLdiffpeakdir<-file.path(PROJDIR,"Cohesin_AML/ChIP_analysis/diffPeaks")#differntial peak in AML
+FIGDIR<-file.path(PROJDIR,"Cohesin_AML/ChIP_analysis/figures/AMLpeaks_in_CD34")
+#new directories
+dir.create(FIGDIR)
+dir.create(file.path(DIFFPEAKS,"AMLpeaks_in_CD34"))
+
+#get data and define grop vectors
+data <- read.delim(file.path(WORKDIR,"CD34_AMLpat_mergePeaks_RAD21.stringent.filtered.XYrm.ann.Rinput.txt"), row.names="ID")
+peaks <- read.delim(file.paht(WORKDIR,"peaks","tmp.Allpat_mergePeaks_RAD21.stringent.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+
+group <- factor(c(rep("CTRL",10), rep("SA1KD",5), rep("SA2KD",6), rep("RAD21KD",4)))
+batch <- factor(c(14,14,17,18,19,21,22,24,27,28,14,17,21,27,28,14,17,20,21,22,28,18,22,27,28))
+```
+
+# Differential analysis in edgeR based on AML RAD21-peakset annotated HSPCs data
+```{r}
+d <- DGEList(counts=data,group=group)
+d <- calcNormFactors(d)
+design <- model.matrix(~0 + group + batch)
+rownames(design) <- colnames(d)
+d <- estimateDisp(d, design, robust=TRUE)
+d$common.dispersion #  0.01937259
+fit <- glmQLFit(d, design)
+
+######SA2KD vs CTRL
+conSA2 <- makeContrasts(groupSA2KD - groupCTRL, levels=design)
+qlfSA2 <- glmQLFTest(fit, contrast=conSA2)
+qstatSA2 <- topTags(qlfSA2, n=Inf)
+write.table (qstatSA2, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA2KDvsCTRL.RAD21.stringent.AML_edgeR.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlfSA2, lfc=1))
+#       -1*groupCTRL 1*groupSA2KD
+#Down                         982
+#NotSig                    123830
+#Up                           329
+# MvA plot 
+pdf(file=file.path(FIGDIR,"edgeR_RAD21.stringent.peaksAML_MvA_SA2KDvsCTRL.pdf"), height=5, width=5)
+plotMD(qlfSA2, status=qdt , values=c(1,-1), hl.col = c("red","blue"), hl.cex = 0.6, bg.col="gray", main="RAD21peaks AML MvA SA2KD vs CTRL")
+abline(h=c(-1,1), col="black")
+dev.off()
+#write results
+up.qstatSA2 <- subset(qstatSA2$table, logFC > 1 & FDR < .05)
+nrow(up.qstatSA2)   
+up.pos.SA2 <- merge(allpositions,up.qstatSA2, by="row.names")
+write.table (up.pos.SA2, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA2KDvsCTRL.RAD21.stringent.AML_edgeR.2foldUp.txt"), sep = "\t", row.names=F, quote=FALSE)
+down.qstatSA2 <- subset(qstatSA2$table, logFC < -1 & FDR < .05)
+nrow(down.qstatSA2)     
+down.pos.SA2 <- merge(allpositions,down.qstatSA2, by="row.names")
+write.table (down.pos.SA2, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA2KDvsCTRL.RAD21.stringent.AML_edgeR.2foldDown.txt"), sep = "\t", row.names=F, quote=FALSE)
+all.pos.SA2 <- merge(allpositions,qstatSA2, by="row.names")
+write.table (all.pos.SA2, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA2KDvsCTRL.RAD21.stringent.AML_edgeR.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+######SA1KD vs CTRL
+conSA1 <- makeContrasts(groupSA1KD - groupCTRL, levels=design)
+qlfSA1 <- glmQLFTest(fit, contrast=conSA1)
+qstatSA1 <- topTags(qlfSA1, n=Inf)
+write.table (qstatSA1, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA1KDvsCTRL.RAD21.stringent.AML_edgeR.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlfSA1, lfc=1))
+
+#       -1*groupCTRL 1*groupSA1KD
+#Down                           5
+#NotSig                    125098
+#Up                            38
+# MvA plot 
+pdf(file=file.path(FIGDIR,"edgeR_RAD21.stringent.peaksAML_MvA_SA1KDvsCTRL.pdf"), height=5, width=5)
+plotMD(qlfSA1, status=qdt , values=c(1,-1), hl.col = c("red","blue"), hl.cex = 0.6, bg.col="gray", main="RAD21peaks AML MvA SA1KD vs CTRL")
+abline(h=c(-1,1), col="black")
+dev.off()
+#write results
+up.qstatSA1 <- subset(qstatSA1$table, logFC > 1 & FDR < .05)
+nrow(up.qstatSA1)   
+up.pos.SA1 <- merge(allpositions,up.qstatSA1, by="row.names")
+write.table (up.pos.SA1, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA1KDvsCTRL.stringent.RAD21.AML_edgeR.2foldUp.txt"), sep = "\t", row.names=F, quote=FALSE)
+down.qstatSA1 <- subset(qstatSA1$table, logFC < -1 & FDR < .05)
+nrow(down.qstatSA1)     
+down.pos.SA1 <- merge(allpositions,down.qstatSA1, by="row.names")
+write.table (down.pos.SA1, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA1KDvsCTRL.stringent.RAD21.AML_edgeR.2foldDown.txt"), sep = "\t", row.names=F, quote=FALSE)
+all.pos.SA1 <- merge(allpositions,qstatSA1, by="row.names")
+write.table (all.pos.SA1, file = file.path(DIFFPEAKS,"AMLpeaks_in_CD34/qstat_SA1KDvsCTRL.stringent.RAD21.AML_edgeR.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+
+
+# Direct diffpeak overlaps: SA2mut SA2KD SA1KD
+```{r}
+sets<-c("SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model")
+filts<-c("2folddown","2foldup")
+SA2mutRADdiffpeaks<-vector(mode = "list", length = 0)
+for (filt in filts){
+  for (set in sets){
+path<-file.path(AMLdiffpeakdir,paste0(set,".",filt,".txt"))
+SA2mutRADdiffpeaks[[paste0(set,".",filt)]]<-read.table(path, header=T, sep="\t",fill = TRUE,comment.char = "#",quote = "\"",row.names=1)
+}}
+
+Diffpeaksdown2<-list(row.names(SA2mutRADdiffpeaks[["SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.2folddown"]]),down.pos.SA2$Row.names,down.pos.SA1$Row.names)
+names(Diffpeaksdown2)<-c("SA2mut.DS","SA2KD","SA1KD")
+pdf(file = file.path(FIGDIR,"Venn_RAD21stringent.peaks_STAG2mutDS_SA2KD_down.pdf"), width = 7, height = 7)
+venn(Diffpeaksdown2)
+dev.off()
+
+Diffpeaksup2<-list(row.names(SA2mutRADdiffpeaks[["SA2mutvsCTRL.RAD21.stringentPeaks_DESEQ.model.2foldup"]]),up.pos.SA2$Row.names,up.pos.SA1$Row.names)
+names(Diffpeaksup2)<-c("SA2mut.DS","SA2KD","SA1KD")
+pdf(file = file.path(FIGDIR,"Venn_RAD21stringent.peaks_STAG2mutDS_SA2KD_up.pdf"), width = 7, height = 7)
+venn(Diffpeaksup2)
+dev.off()
+```
+
+# Enrichment of SA2mut RAD21 diffpeaks in SA2/SA1KD vs CTRL contrast
+```{r}
+# RAD21 diff peak ass. genes #new analysis
+for (filt in filts){
+  for (set in sets){
+SA2mutRADdiffpeaks[[paste0("Ind.",set,".",filt)]]<-row.names(fit$counts) %in% row.names(SA2mutRADdiffpeaks[[paste0(set,".",filt)]])
+}}
+####pairs of indices 
+for (set in sets){
+SA2mutRADdiffpeaks[[paste0("IndPair.",set)]]<-list(SA2mutRADdiffpeaks[[paste0("Ind.",set,".2folddown")]],SA2mutRADdiffpeaks[[paste0("Ind.",set,".2foldup")]])
+names(SA2mutRADdiffpeaks[[paste0("IndPair.",set)]])<-c(paste0("Ind.",set,".2folddown."),paste0("Ind.",set,".2foldup."))
+}
+PSEA<-vector(mode = "list", length = 0) 
+for (set in sets){
+PSEA[[paste0("PSEA.",set,".SA2KDvsCTRL")]]<- fry(d, index=SA2mutRADdiffpeaks[[paste0("IndPair.",set)]], design=design, contrast=conSA2)
+PSEA[[paste0("PSEA.",set,".SA1KDvsCTRL")]]<- fry(d, index=SA2mutRADdiffpeaks[[paste0("IndPair.",set)]], design=design, contrast=conSA1)
+}###enrichments in SA2KD look good
+
+PSEA[["SA2KDcolour"]]<-"seagreen3"
+PSEA[["SA2KDcolourname"]]<-"green"
+PSEA[["SA1KDcolour"]]<-"darkgoldenrod"
+PSEA[["SA1KDcolourname"]]<-"golden"
+STAGS<-c("SA2","SA1")
+qlflist<-list(qlfSA2,qlfSA1)
+names(qlflist)<-c("qlfSA2","qlfSA1")
+####plot barcodeplots
+dir.create(file.path(FIGDIR,"PSEA","stringentPeaks"))
+for (set in sets){
+  for (SA in STAGS){
+pdf(file=file.path(FIGDIR,"PSEA","stringentPeaks",paste0("PSEA.",set,".",SA,"KDvsCTRL.pdf")), height=6, width=6)
+barcodeplot(qlflist[[paste0("qlf",SA)]]$table$logFC, 
+            index=SA2mutRADdiffpeaks[[paste0("Ind.",set,".2foldup")]], 
+            index2=SA2mutRADdiffpeaks[[paste0("Ind.",set,".2folddown")]], 
+            labels=c("CTRL",paste0(SA,"KD")), 
+            xlab = bquote(log[2]*"FC in RAD21 ChIPseq"), 
+            main=paste0(SA,"KD: differential peaks in SA2mut AML", "(",set,")"), cex.main=0.65,
+            col.bars=c(PSEA[[paste0(SA,"KDcolour")]], "firebrick"))
+par(new=TRUE)
+plot.new( )
+plot.window( xlim=c(-5,5), ylim=c(-5,5) )
+text(3,5,bquote('RAD21 peaks increased in SA2mut AML'~'('*.(PSEA[[paste0("PSEA.",set,".",SA,"KDvsCTRL")]][paste0("Ind.",set,".2foldup"),"NGenes"])*')'), adj = c(1,.5))
+text(3,4.5,bquote(italic(P)[adj.]*"<"*.(PSEA[[paste0("PSEA.",set,".",SA,"KDvsCTRL")]][paste0("Ind.",set,".2foldup"),"FDR"])*'('*.(PSEA[[paste0("PSEA.",set,".",SA,"KDvsCTRL")]][paste0("Ind.",set,".2foldup"),"Direction"])*')'), adj = c(1,.5),cex=1.5)
+text(-4,-5,bquote('RAD21 peaks decreased in SA2mut AML '~'('*.(PSEA[[paste0("PSEA.",set,".",SA,"KDvsCTRL")]][paste0("Ind.",set,".2folddown"),"NGenes"])*')'), adj = c(0,.5))
+text(-4,-4.5,bquote(italic(P)[adj.]*"<"*.(PSEA[[paste0("PSEA.",set,".",SA,"KDvsCTRL")]][paste0("Ind.",set,".2folddown"),"FDR"])*'('*.(PSEA[[paste0("PSEA.",set,".",SA,"KDvsCTRL")]][paste0("Ind.",set,".2folddown"),"Direction"])*')'), adj = c(0,.5),cex=1.5)
+dev.off()
+}}
+```

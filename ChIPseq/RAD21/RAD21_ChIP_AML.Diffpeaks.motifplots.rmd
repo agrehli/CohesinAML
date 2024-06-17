@@ -1,0 +1,237 @@
+--
+title: "RAD21 diffpeak motif enrichment plots - AML"
+author: "Alexander Fischer"
+date: "04 2023"
+output: html
+---
+
+# load libraries and set paths
+```{r}
+#libraries
+library(XML)
+library(ggplot2)
+library(data.table)
+library(cowplot)
+library(grImport2)
+library(grConvert)
+library(grid)
+
+#paths
+PROJDIR<-"/misc/data/analysis/project_cohesin"
+MOTIFDIR<-file.path(PROJDIR,"Cohesin_AML/ChIP_analysis/RAD21revised/motifs")
+MOTIFDIRbyCTCF<-file.path(MOTIFDIR,"byCTCFoverlap")
+
+FIGDIR<-file.path(PROJDIR,"Cohesin_AML/ChIP_analysis/RAD21revised/figures")
+FIGDIRCD34<-file.path(PROJDIR,"CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12/figures/RAD21revised")
+dir.create(file.path(FIGDIR,"TOPmotifBarplots"))
+dir.create(file.path(FIGDIR,"TOPmotifBarplots","byCTCFoverlap"))
+
+#variables
+CTCFcats=c("withCTCF", "noCTCF")
+filts<-c("2folddown","2foldup")
+MUTS<-c("SA2mut","RAD21mut")
+```
+
+
+
+# read homer html results into list
+```{r}
+###for CTCF split results
+Motiflist<-vector(mode = "list", length = 0)
+###for CTCF split results: only applies to SA2mut!
+for (filt in filts){
+type= "stringentPeaks_DESEQ.model."
+      for (CTCF in CTCFcats){  
+file <-file.path(MOTIFDIRbyCTCF,paste0("SA2mutvsCTRL.RAD21.",type,filt,".",CTCF,"/final/homerResults.html"))
+html<-readHTMLTable(file)
+htmldf<-as.data.frame(html)
+colnames(htmldf)<-c("RANK","MOTIF","Pvalue","LogPvalue","percententTargets","percentBackground","STD","Match","motifFile")
+#calculate enrichment
+htmldf$logEnrichment<-log2((as.numeric(sub("%", "", htmldf$percententTargets))/100)/(as.numeric(sub("%", "", htmldf$percentBackground))/100))
+htmldf$TARvsBG<-(as.numeric(sub("%", "", htmldf$percententTargets))/100)/(as.numeric(sub("%", "", htmldf$percentBackground))/100)
+#set levels for RANK
+htmldf$RANK<-factor(htmldf$RANK,levels=as.numeric(htmldf$RANK))
+#extract motifname/Family to display
+i<-c(1:nrow(htmldf))
+htmldf$NameFamily[i]<-sapply(htmldf$Match[i],function(x) strsplit(as.character(x), "/")[[1]][1]) 
+htmldf$MotifFamily[i]<-sapply(htmldf$NameFamily[i],function(x) strsplit(as.character(x), "[()]")[[1]][2]) 
+htmldf$MotifName[i]<-sapply(htmldf$Match[i],function(x) strsplit(as.character(x), "[()]")[[1]][1]) 
+htmldf$MotifName[i]<-sapply(htmldf$MotifName[i],function(x) strsplit(as.character(x), "/")[[1]][1]) 
+#individual corrections
+htmldf[which(htmldf$MotifName=="PB0058.1_Sfpi1_1"),"MotifName"]<-"PU.1"
+htmldf[which(htmldf$MotifName=="PU.1"),"MotifFamily"]<-"ETS"
+htmldf[which(htmldf$MotifName=="PU.1"),"NameFamily"]<-"PU.1(ETS)"
+htmldf[which(htmldf$MotifName=="SPIC"),"MotifFamily"]<-"ETS"
+htmldf[which(htmldf$MotifName=="IKZF1"),"MotifFamily"]<-"IKAROS Zf"
+htmldf[which(htmldf$MotifName=="CTCF"|htmldf$MotifName=="CTCFL"|htmldf$MotifName=="BORIS"),"MotifFamily"]<-"CTCF"
+htmldf[htmldf$MotifName %like% "BHLH","MotifFamily" ]<-"bHLH"
+htmldf[htmldf$MotifName %like% "Gata","MotifFamily" ]<-"GATA"
+htmldf[htmldf$MotifName %like% "RAP2","MotifFamily" ]<-"ERF"
+#add to list
+Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF)]]<-htmldf
+}}
+```
+
+
+# function for plotting 
+```{r}
+#function for plotting 
+MotifBarFunc<-function(htmldf,Top=5, xmax=NA,forcepvalcoord=NA,fillcol="seagreen",motifname="MotifName",sizeName=12){
+plotdf<-htmldf[1:Top,]
+plotdf$RANK<-factor(plotdf$RANK,levels=c(Top:1)) ##rank needs to be inverted for this..!
+maxval<-max(plotdf$logEnrichment) #cooridinate/position to display pvalue
+if (is.na(forcepvalcoord)){
+pvalcoord<-maxval+0.1*maxval}
+else
+{pvalcoord<-forcepvalcoord}
+ggplot(plotdf) +
+  geom_bar(aes(as.numeric(logEnrichment),RANK,fill = "filly",alpha=0.8), stat="identity") +
+  scale_fill_manual(values = c("filly"=fillcol))+
+    xlab("log2 enrichment") + ylab("") +
+    ggtitle("") +
+    geom_text(data=plotdf,aes(x=0,y=RANK,label=get(motifname)),size=sizeName,hjust=0,,fontface = "bold") +
+    geom_text(data=plotdf,aes(x=pvalcoord,y=RANK,label=paste0("P < ",Pvalue)),size=sizeName*0.75,fontface = "italic") +
+    coord_cartesian(xlim = c(0,xmax))+
+  scale_x_continuous(expand = expansion(mult = c(0, 0))) + 
+  theme(
+  legend.position="none",
+  axis.text.x = element_text(angle=0,hjust=0.95,vjust=0.2,size=20,face="bold"),
+  axis.line.x = element_line(colour = "black"),
+  axis.text.y = element_blank(), axis.line.y= element_blank(),axis.ticks.y= element_blank(),
+  axis.title.x=element_text(size=20,face="bold"), 
+  plot.title = element_text(size = 12, face = "bold"), 
+  panel.border = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.background = element_blank(),
+)
+}
+```
+
+## test plots
+```{r}
+###look at all plots by CTCF subset
+      for (CTCF in CTCFcats){
+        type= "stringentPeaks_DESEQ.model."
+pdf(file=file.path(FIGDIR,"TOPmotifBarplots","byCTCFoverlap",paste0("Top6.SA2mutvsCTRL.RAD21.",type,"2foldup.",CTCF,".pdf")))
+plot(MotifBarFunc(Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,"2foldup.",CTCF)]],Top=6,xmax=6.5,forcepvalcoord=5.7,fillcol="seagreen",motifname="NameFamily"))
+dev.off()
+pdf(file=file.path(FIGDIR,"TOPmotifBarplots","byCTCFoverlap",paste0("Top6.SA2mutvsCTRL.RAD21.",type,"2folddown.",CTCF,".pdf")))
+plot(MotifBarFunc(Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,"2folddown.",CTCF)]],Top=6,xmax=6.5,forcepvalcoord=5.7,fillcol="firebrick",motifname="NameFamily"))
+dev.off()
+}
+
+```
+
+# integrate motifs images
+## read in images (top 10 for all types)
+```{r}
+##diffpeaks by CTCF subset
+motifgroblistbyCTCF<-list()
+for (filt in filts){
+#  for (type in cats){
+type= "stringentPeaks_DESEQ.model."
+for (CTCF in CTCFcats){  
+imagedir<-file.path(MOTIFDIRbyCTCF,paste0("SA2mutvsCTRL.RAD21.",type,filt,".",CTCF,"/motifimages"))
+dir.create(imagedir)
+ for (i in c(1:10)){
+convertPicture(file.path(MOTIFDIRbyCTCF,paste0("SA2mutvsCTRL.RAD21.",type,filt,".",CTCF,"/final/homerResults"),paste0("motif",i,".logo.svg")),file.path(imagedir,paste0("motif",i,".logo.svg")))
+motifpic<-readPicture(file.path(imagedir,paste0("motif",i,".logo.svg")))
+motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif",i)]]<-gTree(children=gList(pictureGrob(motifpic)))
+}
+}}
+```
+
+## generate top 5 motifplots including svg logo for all-diff.peak sets
+```{r}
+##all in one STAG2 mut ##by CTCF category
+plotlistbyCTCF<-list()
+for (filt in filts){
+    for (CTCF in CTCFcats){
+#  for (type in cats){
+type= "stringentPeaks_DESEQ.model."
+p1<-MotifBarFunc(Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF)]],Top=5,xmax=6,forcepvalcoord=5,fillcol="grey",motifname="MotifName",sizeName=6)
+plotlistbyCTCF[[paste0(filt,type,CTCF)]]<-p1+ 
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif1")]],xmin = -6.5, xmax = 0.5, ymin = 4.5, ymax = 5.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif2")]],xmin = -6.5, xmax = 1.2, ymin = 3.5, ymax = 4.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif3")]],xmin = -6.5, xmax = 1.2, ymin = 2.5, ymax = 3.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif4")]],xmin = -6.5, xmax = 1.2, ymin = 1.5, ymax = 2.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif5")]],xmin = -6.5, xmax = 1.2, ymin = 0.5, ymax = 1.5)+
+coord_cartesian(xlim = c(-6.5,6.5),clip="off")+
+theme(plot.margin = unit(c(1,2,2,1), "cm"),axis.title.x=element_text(size=20,face="bold",hjust=0.8))
+}}
+
+
+pdf(file=file.path(FIGDIR,"TOPmotifBarplots","byCTCFoverlap","Top5motifs_SA2mut.stringentRAD21diffpeaks.by.CTCF.svgs.pdf"),height=16,width=7)
+plot_grid(plotlist=plotlistbyCTCF,ncol=1,labels=names(plotlistbyCTCF))
+dev.off()
+```
+
+## final motifplots by CTCF individually filtered for motifs that are redundant
+```{r}
+type= "stringentPeaks_DESEQ.model."
+plotlistbyCTCFsel<-list()
+#up with CTCF top3 skipping redundant CTCF motifs
+filt="2foldup"
+CTCF="withCTCF"
+selectmotifs<-Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF)]][c(1,2,5),]
+selectmotifs$RANK<-factor(c(1,2,3)) #important: redifine Ranks for plotting levels!
+p1<-MotifBarFunc(selectmotifs,Top=3,xmax=6,forcepvalcoord=6,fillcol="seagreen",motifname="NameFamily",sizeName=6)
+plotlistbyCTCFsel[[paste0(filt,type,CTCF)]]<-p1+ 
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif1")]],xmin = -6.5, xmax = 0.5, ymin = 2.5, ymax = 3.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif2")]],xmin = -6.5, xmax = 1.2, ymin = 1.5, ymax = 2.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif5")]],xmin = -6.5, xmax = 1.2, ymin = 0.5, ymax = 1.5)+
+coord_cartesian(xlim = c(-6.5,6.5),clip="off")+
+theme(plot.margin = unit(c(1,2,2,1), "cm"),axis.title.x=element_text(size=20,face="bold",hjust=0.8))
+#up no CTCF top3
+CTCF="noCTCF"
+p1<-MotifBarFunc(Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF)]],Top=3,xmax=6,forcepvalcoord=6,fillcol="seagreen",motifname="NameFamily",sizeName=6)
+plotlistbyCTCFsel[[paste0(filt,type,CTCF)]]<-p1+ 
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif1")]],xmin = -6.5, xmax = 0.5, ymin = 2.5, ymax = 3.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif2")]],xmin = -6.5, xmax = 1.2, ymin = 1.5, ymax = 2.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif3")]],xmin = -6.5, xmax = 1.2, ymin = 0.5, ymax = 1.5)+
+coord_cartesian(xlim = c(-6.5,6.5),clip="off")+
+theme(plot.margin = unit(c(1,2,2,1), "cm"),axis.title.x=element_text(size=20,face="bold",hjust=0.8))
+
+
+#down with CTCF top3 skipping redundant CTCF motifs
+filt="2folddown"
+CTCF="withCTCF"
+selectmotifs<-Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF)]][c(1,2,5),]
+selectmotifs$RANK<-factor(c(1,2,3)) #important: redifine Ranks for plotting levels!
+p1<-MotifBarFunc(selectmotifs,Top=3,xmax=6,forcepvalcoord=6,fillcol="firebrick",motifname="NameFamily",sizeName=6)
+plotlistbyCTCFsel[[paste0(filt,type,CTCF)]]<-p1+ 
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif1")]],xmin = -6.5, xmax = 0.5, ymin = 2.5, ymax = 3.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif2")]],xmin = -6.5, xmax = 1.2, ymin = 1.5, ymax = 2.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif5")]],xmin = -6.5, xmax = 1.2, ymin = 0.5, ymax = 1.5)+
+coord_cartesian(xlim = c(-6.5,6.5),clip="off")+
+theme(plot.margin = unit(c(1,2,2,1), "cm"),axis.title.x=element_text(size=20,face="bold",hjust=0.8))
+
+#down no CTCF top3 skipping redundant ETS motifs
+CTCF="noCTCF"
+selectmotifs<-Motiflist[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF)]][c(1,2,4),]
+selectmotifs$RANK<-factor(c(1,2,3)) #important: redifine Ranks for plotting levels!
+p1<-MotifBarFunc(selectmotifs,Top=3,xmax=6,forcepvalcoord=6,fillcol="firebrick",motifname="NameFamily",sizeName=6)
+plotlistbyCTCFsel[[paste0(filt,type,CTCF)]]<-p1+ 
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif1")]],xmin = -6.5, xmax = 0.5, ymin = 2.5, ymax = 3.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif2")]],xmin = -6.5, xmax = 1.2, ymin = 1.5, ymax = 2.5)+
+annotation_custom(motifgroblistbyCTCF[[paste0("SA2mutvsCTRL.RAD21.",type,filt,CTCF,"motif4")]],xmin = -6.5, xmax = 1.2, ymin = 0.5, ymax = 1.5)+
+coord_cartesian(xlim = c(-6.5,6.5),clip="off")+
+theme(plot.margin = unit(c(1,2,2,1), "cm"),axis.title.x=element_text(size=20,face="bold",hjust=0.8))
+
+pdf(file=file.path(FIGDIR,"TOPmotifBarplots","byCTCFoverlap","Top3_sel.motifs_SA2mut.stringentRAD21diffpeaks.by.CTCF.svgs.pdf"),height=14,width=8)
+plot_grid(plotlist=plotlistbyCTCFsel,ncol=1,labels=names(plotlistbyCTCFsel))
+dev.off()
+```
+
+## combined plot with HSPC diffpeak motifs
+```{r}
+plotlistHSPCs<-readRDS(file.path(FIGDIRCD34,"TOPmotifBarplots","plotlistsel.HSPC.RAD21diff.motifbarplts.rdata"))
+comblist<-c(plotlistbyCTCFsel,plotlistHSPCs)
+
+pdf(file=file.path(FIGDIR,"TOPmotifBarplots","byCTCFoverlap","Top3_sel.motifs_SA2mut.SA2KD.stringentRAD21diffpeaks.by.CTCF.svgs.pdf"),height=24,width=8)
+plot_grid(plotlist=comblist,ncol=1,labels=names(comblist),rel_heights=c(8,8,8,8,5.5,12))
+dev.off()
+```
+
+

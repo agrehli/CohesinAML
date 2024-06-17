@@ -1,0 +1,86 @@
+---
+title: "Differential Analyis of CTCF ChIPseq data of Cohesin AMLs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+#load libraries
+library(DESeq2)
+library(ggplot2)
+library(umap)
+library(ggrepel)
+library(dplyr)
+
+#set paths
+DIR_DATA="/misc/data"
+WORKDIR<-file.path(DIR_DATA,"analysis/project_cohesin/Cohesin_AML/ChIP_analysis")
+FIGDIR=file.path(WORKDIR,"figures")
+
+#read in counts, metadata and peak coordinates
+metadata <- read.csv(file.path(WORKDIR,"Rad21_AML_meta.csv"),row.names="X...ChIP.ID")
+
+peaks <- read.delim(file.path(WORKDIR,"annotation_tables","CTCF.filtered.peaks.Rinput.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+counts<- read.table(file=file.path(WORKDIR,"annotation_tables","Allpat_CTCF.peaks.ann.filt.Rinput.txt"), header=T, sep="\t", row.names=1)
+colnames(counts) <- rownames(metadata)
+```
+
+# DESeq2 Analysis based on standard CTCF peaks set 
+###NOTE: these results are used for enrichment/correlation analyses i.e. the integration of CTCF with loop Anhcors coordinates
+```{r}
+##integer conversion
+i<-c(1:ncol(counts))
+counts[ , i] <- apply(counts[ , i], 2,            # Specify own function within apply
+                    function(x) as.integer(x))
+
+#created Deseq count table with complex design
+ddsFullCountTable2 <- DESeqDataSetFromMatrix(
+countData = counts,
+colData = metadata,
+design = ~ npm1 + sex + flt3itd + RUNX1 + group)
+##ensure CTRL group is used as reference point for statistics
+ddsFullCountTable2$group<-relevel(ddsFullCountTable2$group, ref = "ctr")
+dds3 <- DESeq(ddsFullCountTable2)
+##summarize results
+resRad21m<-results(dds3, contrast=c("group","Rad21","ctr"))
+resSA2m<-results(dds3, contrast=c("group","SA2","ctr"))
+#count diffpeaks
+diffpeaks<-data.frame()
+diffpeaks["total","SA2mutvsCTRL_model"]<-nrow(resSA2m[ which(resSA2m$padj < 0.05 ), ])
+diffpeaks["downFC2","SA2mutvsCTRL_model"]<-nrow(resSA2m[ which(resSA2m$padj < 0.05 & resSA2m$log2FoldChange < (-1) ), ])
+diffpeaks["upFC2","SA2mutvsCTRL_model"]<-nrow(resSA2m[ which(resSA2m$padj < 0.05 & resSA2m$log2FoldChange > (1) ), ])
+diffpeaks["total","RAD21mutvsCTRL_model"]<-nrow(resRad21m[ which(resRad21m$padj < 0.05 ), ])
+diffpeaks["downFC2","RAD21mutvsCTRL_model"]<-nrow(resRad21m[ which(resRad21m$padj < 0.05 & resRad21m$log2FoldChange < (-1) ), ])
+diffpeaks["upFC2","RAD21mutvsCTRL_model"]<-nrow(resRad21m[ which(resRad21m$padj < 0.05 & resRad21m$log2FoldChange > (1) ), ])
+diffpeaks
+write.table (diffpeaks, file = file.path(WORKDIR,"diffPeaks/DESEQ.model.results.CTCF.txt"), sep = "\t", row.names=T, quote=FALSE)
+
+#write result tables
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+##RAD21 mut results
+write.table (resRad21m, file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.CTCF.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf2<-read.table (file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.CTCF.Peaks_DESEQ.model.all.txt"), sep = "\t")
+all.pos<-merge(allpositions,resdf2, by="row.names")
+all.posord<-all.pos[order(all.pos$padj, decreasing = FALSE), ]
+write.table (all.posord,file = file.path(WORKDIR,"diffPeaks/RAD21mutvsCTRL.CTCF.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+##SA2 mut results
+write.table (resSA2m, file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.CTCF.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=T, quote=FALSE)
+resdf2<-read.table (file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.CTCF.Peaks_DESEQ.model.all.txt"), sep = "\t",header=T,row.names=1)
+all.pos<-merge(allpositions,resdf2, by="row.names")
+all.posord<-all.pos[order(all.pos$padj, decreasing = FALSE), ]
+write.table (all.posord,file = file.path(WORKDIR,"diffPeaks/SA2mutvsCTRL.CTCF.Peaks_DESEQ.model.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+##include  norm. counts
+row.names(all.posord)<-all.posord$Row.names
+all.posord<-all.posord[, -1]
+normcounts<-counts(dds3, normalized=T)
+all.posordcounts<-merge(all.posord,normcounts, by=0)
+write.table (all.posordcounts,file = file.path(WORKDIR,"diffPeaks/RAD21.peaks.DESEQ.model.normcounts.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+

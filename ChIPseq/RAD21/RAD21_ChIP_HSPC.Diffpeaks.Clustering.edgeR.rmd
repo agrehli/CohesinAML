@@ -1,0 +1,129 @@
+---
+title: "Differential Analyis and Clustering of RAD21 ChIPseq data of Cohesin KD HSPCs"
+author: "Alexander Fischer"
+date: "04 2022"
+output: html
+---
+
+
+# Load libraries and data
+```{r}
+#load libraries
+library(edgeR)
+library(umap)
+library(ggplot2)
+library(ggrepel)
+#set paths
+DIR_DATA="/misc/data"
+WORKDIR<-file.path(DIR_DATA,"analysis/project_cohesin/CD34/ChIP_KD_analysis/Cohesin_CTCF_MED12")
+DIFFPEAKS<-file.path(WORKDIR,"diffPeaks")
+FIGDIR<-file.path(WORKDIR,"figures")
+dir.create(file.path(FIGDIR,"Clustering"))
+#load data and set group vectors
+data <- read.delim(file.path(WORKDIR,"CD34_RAD21.peaks.ann.Rinput.txt"), row.names="ID")
+group <- factor(c(rep("CTRL",10), rep("SA1KD",5), rep("SA2KD",6), rep("RAD21KD",4)))
+batch <- factor(c(14,14,17,18,19,21,22,24,27,28,14,17,21,27,28,14,17,20,21,22,28,18,22,27,28))
+peaks <- read.delim(file.path(WORKDIR,"peaks","CD34_RAD21.peaks.Rinput.txt"), header=F)
+colnames(peaks) <- c("ID","chr","start","stop","strand","NA")
+allpositions <- peaks[,-1]
+rownames(allpositions) <- peaks[,1]
+
+```
+
+# edgeR contrasts and qlf test KD vs CTRL HSPCs
+```{r}
+##DGElist object and fit
+d <- DGEList(counts=data,group=group)
+d <- calcNormFactors(d)
+design <- model.matrix(~0 + group + batch) #include donor batch in design!
+rownames(design) <- colnames(d)
+d <- estimateDisp(d, design, robust=TRUE)
+d$common.dispersion
+fit <- glmQLFit(d, design)
+######SA2KD vs CTRL
+con <- makeContrasts(groupSA2KD - groupCTRL, levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qstat <- topTags(qlf, n=Inf)
+write.table (qstat, file = file.path(DIFFPEAKS,"qstat_SA2KDvsCTRL.RAD21.peaks_edgeR.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlf, lfc=1))
+#       -1*groupCTRL 1*groupSA2KD
+#Down                        1270
+#NotSig                     77302
+#Up                           295
+up.qstat <- subset(qstat$table, logFC > 1 & FDR < .05)
+nrow(up.qstat)   
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFPEAKS,"qstat_SA2KDvsCTRL.RAD21.peaks_edgeR.2foldUp.txt"), sep = "\t", row.names=F, quote=FALSE)
+up.qstat <- subset(qstat$table, logFC < -1 & FDR < .05)
+nrow(up.qstat)     
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFPEAKS,"qstat_SA2KDvsCTRL.RAD21.peaks_edgeR.2foldDown.txt"), sep = "\t", row.names=F, quote=FALSE)
+up.pos <- merge(allpositions,qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFPEAKS,"qstat_SA2KDvsCTRL.RAD21.peaks_edgeR.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+
+######SA1KD vs CTRL
+con <- makeContrasts(groupSA1KD - groupCTRL, levels=design)
+qlf <- glmQLFTest(fit, contrast=con)
+qstat <- topTags(qlf, n=Inf)
+write.table (qstat, file = file.path(DIFFPEAKS,"qstat_SA1KDvsCTRL.RAD21.peaks_edgeR.glm.txt"), sep = "\t", col.names=NA, quote=FALSE)
+summary(qdt <- decideTestsDGE(qlf, lfc=1))
+#       -1*groupCTRL 1*groupSA1KD
+#Down                          11
+#NotSig                     78826
+#Up                            30
+up.qstat <- subset(qstat$table, logFC > 1 & FDR < .05)
+nrow(up.qstat)     #30
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFPEAKS,"qstat_SA1KDvsCTRL.RAD21.peaks_edgeR.2foldUp.txt"), sep = "\t", row.names=F, quote=FALSE)
+up.qstat <- subset(qstat$table, logFC < -1 & FDR < .05)
+nrow(up.qstat)     # 11
+up.pos <- merge(allpositions,up.qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFPEAKS,"qstat_SA1KDvsCTRL.RAD21.peaks_edgeR.2foldDown.txt"), sep = "\t", row.names=F, quote=FALSE)
+up.pos <- merge(allpositions,qstat, by="row.names")
+write.table (up.pos, file = file.path(DIFFPEAKS,"qstat_SA1KDvsCTRL.RAD21.peaks_edgeR.all.txt"), sep = "\t", row.names=F, quote=FALSE)
+```
+
+
+# Clustering using UMAP
+```{r}
+##logcpm transformation and batch correction
+logcpm_CD34 <- cpm(d, prior.count=2, log=TRUE)
+corr.logcpm_CD34 <- removeBatchEffect(logcpm_CD34, batch=batch, design=design_CD34)
+
+#set seed for reproducibility
+  set.seed(seed = 1234)
+  #appply umap algorithm on transposed data matrix, then extract layout for plotting
+  umap.dat<-umap::umap(t(as.matrix(corr.logcpm_CD34)))
+  umap.dat<-data.frame(umap.dat$layout) 
+  umap.dat$group<-group_CD34
+  umap.dat$donor<-batch
+#generate ggplot object: here showing NPM1
+  umap.p<-ggplot(data = umap.dat)+
+    aes(x = X1, y = X2)+
+    xlab("UMAP2") +
+    ylab("UMAP1") +
+    scale_x_continuous(limits = c(-2.5,2.5)) +
+    scale_y_continuous(limits = c(-2.5,2.5))+
+    geom_point(size = 12, aes(colour=group))+
+    scale_color_manual(values = c("CTRL" = "firebrick", "SA2KD" = "seagreen","SA1KD" = "darkgoldenrod","RAD21KD"="mediumvioletred")) +
+    #geom_text_repel(aes(label=batch),size=4,segment.size=0.2,min.segment.length=0.0,point.padding=.05,segment.alpha=0.5,max.overlaps = 50,force = 50, show.legend = FALSE) +
+    labs(title = "UMAP RAD21 peaks CD34+ HSPCs")+
+    theme_light(base_size=12) +
+    theme(plot.tag=element_text(size = 12*2.0, face = "bold"),
+          plot.title = element_text(size = 12, face = "bold"),
+          plot.title.position = "panel",
+          legend.text = element_text(colour="black", size = 12, face = "plain"),
+          legend.title = element_text(colour="black", size = 12, face = "bold"),
+          legend.box.just = "top",
+          axis.text = element_text(colour = "black", size = 16, face = "plain"),
+          axis.title = element_text(colour = "black",size = 12,face = "plain"),
+          panel.grid = element_blank(),
+          panel.border = element_rect(colour = "black",size=2),
+          axis.ticks = element_line(colour="black"),
+          aspect.ratio = 1.0, #plot panel aspect ratio for squared == 1.0! :)
+          legend.position = "right"
+        )
+pdf(file= file.path(FIGDIR,"Clustering","UMAP_RAD21peaks.CD34.nolab.pdf"), height=8, width=12)
+plot(umap.p)
+dev.off()
+```
