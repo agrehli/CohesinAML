@@ -1,5 +1,5 @@
 #!/bin/bash
-# 6I_S6G_S7I.sh
+# 6I_S6G_S7L.sh
 
 ### Plot 1.5 Mb window around SOCS2, SH2D2A, PAWR, ITGA9 and DACT1 using fancplot. 
 ### Control matrices on the top row, Mutant/Patient matrices in middle row, and 'difference' matrices in the bottom row.
