@@ -4,6 +4,7 @@
 ### Plot Aggregate Peak Analysis (APA) results from coolpup.py over merged Hi-C CD34 matrices
 ### Hi-C signal was aggregated over loop anchors overlapping 'weakened' or 'strengthened' loops 
 ### between patients with STAG2 mutations compared to control patients
+### The APA analyses were performed using coolpup.py in 6B_6G_coolpuppy.sh
 
 # R version: 4.2.2
 # colorscale: logarithmic, centred on 1, log Fold Change range [0.25-4]
@@ -47,7 +48,7 @@
 # Set input and output paths
 	wdir <- '/private/'
 	setwd(wdir)
-	date <- '2038_01_19'#'23_03_22'
+	date <- '23_03_22'
 	indir <- paste0(wdir,'/APA/DifferentialLoopAnalysis/')
 	printdir <- paste0(indir,date,'.')
 

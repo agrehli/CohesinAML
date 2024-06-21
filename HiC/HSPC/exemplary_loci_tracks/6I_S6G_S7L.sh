@@ -10,8 +10,8 @@
 # 6I: SOCS2 : chr12:92855000-94355000
 # S6G: SH2D2A : chr1:156066848-157566847
 # S6G: PAWR : chr12:78940964-80440963
-# S7I: ITGA9 : chr3:36702115-38202114
-# S7I: DACT1 : chr14:57883967-59383966
+# S7L: ITGA9 : chr3:36702115-38202114
+# S7L: DACT1 : chr14:57883967-59383966
 # view: 'triangular'
 
 WDIR='/private/'
@@ -26,7 +26,7 @@ COLS=(RdBu_r) # colorscale for 'difference 'Hi-C plots
 VMAXS=(0.015 0.02) # maximum saturation for Hi-C plots
 MAX_DIST=(700kb) # cap of maximum distance away from diagonal to plot
 
-# SOCS2: 1.5 Mb coordinates
+# 1.5 Mb coordinates
 NAME=(SOCS2_15Mb SH2D2A_15Mb PAWR_15Mb ITGA9_15Mb DACT1_15Mb)
 CHR=(chr12 chr1 chr12 chr3 chr14)
 START=(92855000 156066848 78940964 36702115 57883967)

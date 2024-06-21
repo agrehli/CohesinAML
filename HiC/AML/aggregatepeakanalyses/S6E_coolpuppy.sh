@@ -1,7 +1,7 @@
 #!/bin/bash
-# 6B_6G_coolpuppy.sh
+# S6E_coolpuppy.sh
 
-### Perform Aggregate Peak Analysis (APA) with coolpup.py on merged Hi-C matrices of Ctrl and Cohesin deficient cells/patients.
+### Perform Aggregate Peak Analysis (APA) with coolpup.py on indivdual patient or replicate Hi-C matrices of Ctrl and Cohesin deficient cells/patients.
 ### Enrichment is calculated against 100 shifted windows as controls
 
 ### Hi-C signal was aggregated over loop anchors overlapping 'weakened' or 'strengthened' loops 
@@ -13,17 +13,17 @@
 # .hic object resolution: 10kb
 # excluded chromosomes: chrX,chrY,chr17_GL000205v2_random
 
-# APA on merged Cohesin patients and merged CD34 Hi-C matrices at 10kb resolution
+# APA on Hi-C matrices at 10kb resolution from individual patients harbouring Cohesin mutations or individual CD34 KD replicates
 WDIR='/private/'
 cd $WDIR
 OUTDIR=$WDIR/APA/DifferentialLoopAnalysis/
 mkdir -p $OUTDIR
 
 COMPARISONS=(RAD21KDvsCTRL SA1KDvsCTRL SA2KDvsCTRL RAD21mutvsCTRL SA2mutvsCTRL)
-FDRS=(0.001 0.01 0.05) # we tested 3 different significance thresholds for 'differential looping' with very similar results
+FDRS=(0.05)
 DIRECTIONS=(Strengthened Weakened)
 SIZEGROUPS=(1 2 3 4 5 6 7 All) # defined in 6B_diff_loops_size_split.R # '<50kb','50kb-100kb','100kb-500kb','500kb-1Mb','1Mb-2Mb','2Mb-5Mb','>5Mb'
-AMLSAMPLES=(merged_sa2_mut merged_rad21_mut merged_aml_ctrl merged_CD34_rad21 merged_CD34_siCtrl merged_CD34_stag1 merged_CD34_stag2)
+AMLSAMPLES=(RAD21_UKR186_Rep1_R1 AML_SA2_9708_Rep2_S56_L002_R1 AML_SA2_27396_Rep1_R1 AML_ctr_18136_Rep1_R1 AML_ctr_19405_Rep1_R1 AML_ctr_21047_Rep1_R1 AML_SA2_29728_R1 AML_SA2_24743_R1 AML_RAD21_38455_R1 AML_RAD21_26830_R1 AML_RAD21_23039_R1 AML_ctr_21290_R1 AML_ctr_19416_R1 AML_ctr_18519_R1 AML_ctr_16911_R1 CD34_28_5_SA2_KD_R1 CD34_27_3_SA1_KD_R1 CD34_22_2_SA2_KD_R1 CD34_21_4_siCtrl_Rep1_R1 CD34_21_3_SA2_KD_R1 CD34_21_2_SA1_KD_R1 CD34_20_6_siCtrl_Rep1_R1 CD34_20_5_SA2_KD_R1 CD34_20_4_SA1_KD_R1 CD34_20_1_RAD21_KD_R1 CD34_18_4_siCtrl_R1 CD34_18_1_RAD21_KD_R1 CD34_17_2_SA2_KD_R1 CD34_17_1_SA1_KD_R1 CD34_14_3_siCtrl_R1 CD34_14_2_SA2_KD_R1 CD34_28_6_siCtrl_R1 CD34_28_4_SA1_KD_R1 CD34_28_4_SA1_KD_R1 CD34_27_4_siCtrl_R1 CD34_17_3_siCtrl_R1 CD34_27_1_RAD21_KD_R1 CD34_14_1_SA1_KD_R1 CD34_22_3_siCtrl_R1 CD34_28_1_RAD21_KD_R1 CD34_22_1_RAD21_KD_R1)
 RESOLUTIONS=(10kb)
 
 # Submit trimming jobs using a custom script for Sun Grid Engine's qsub command
@@ -44,7 +44,7 @@ for k in ${COMPARISONS[*]}; do \
 								--pad 200 \
 								--outdir $OUTDIR \
 								--outname AML2022.$AMLSAMPLES[${i}].${j}.over.22_12_05.${k}.loops.${m}.FDR.${l}.SizeGroup.${n}.bedpe.txt \
-								fanc/hic/binned/$AMLSAMPLES[${i}]/$AMLSAMPLES[${i}]_${j}.cool::/resolutions/10000 \
+								fanc/hic/binned/$AMLSAMPLES[${i}]/10kb_HiC_$AMLSAMPLES[${i}]_val_1.fq.gzorderedchr.cool::/resolutions/10000 \
 								${WDIR}/LoopCoordinates/DifferentialLoopAnalysis/22_12_05.${k}.loops.${m}.FDR.${l}.SizeGroup.${n}.bedpe;
 					done;
 				done;

@@ -15,7 +15,7 @@ OUTDIR=plots/Fischer2023/FoldChange
 mkdir -p $OUTDIR
 
 # Plotting parameters
-DATE='2038_01_19' #23_02_21
+DATE=23_02_21
 VMAXS=(0.015) # maximum saturation for Hi-C plots
 
 # ILDR2: coordinates

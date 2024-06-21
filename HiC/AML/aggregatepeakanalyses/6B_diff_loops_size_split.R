@@ -6,7 +6,7 @@
 ### then, split into size groups and save coordinates as an input for Aggregate Peak Analysis (APA)
 
 # R version: 4.2.2
-# Differential loops were defined using DEseq2: padj <= 0.05 & log2FoldChange >0.585
+# Differential loops were defined using DEseq2: padj <= 0.05 & log2FoldChange >0.585 in HiC_AML.diffloops.DESeq2.rmd
 
 
 # Load packages and plotting functions for accompanying MA-plot
@@ -46,12 +46,11 @@
 # Set input and output paths
 	wdir <- '/private/'
 	setwd(wdir)
-	date <- '2038_01_19'#'22_12_05'
+	date <- '22_12_05'
 	indir <- paste0(wdir,'/LoopCoordinates/DifferentialLoopAnalysis/')
 	printdir <- paste0(indir,date,'.')
 	outdir1 <- paste0(indir,date,'.')
 	# outdir2 <- paste0(wdir, '/APA/DifferentialLoopAnalysis/',date,'.')
-	# outdir3 <- paste0(wdir, '/APA/DifferentialAnchorsEnhancer/',date,'.')
 
 # Go through each set of differential loops called by Alex using DEseq2 and save them as bedpe files split by 
 # significance thresholds (padj < 0.001, 0.01,0.05), change in direction (strengthened/weakened), and distance (0.1-1, 1-10, 10-25, 25-100 Mb)
