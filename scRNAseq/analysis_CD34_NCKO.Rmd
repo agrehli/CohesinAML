@@ -1,0 +1,335 @@
+---
+title: "QC_p069"
+author: "Inma Hernandez"
+date: "1/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Merge demultiplexed objects
+
+
+```{r,echo=FALSE}
+rm(list = ls())
+library(Seurat)
+library(ggpubr)
+library(tidyverse)
+library(plyr)
+library(ggplot2)
+library(cowplot)
+library(ggExtra)
+library(harmony)
+library(WriteXLS)
+library(Nebulosa)
+library(SCpubr)
+
+path_to_sample<- str_c(
+  "/Users/Inma/Documents/mnt/r26rci/projects/p069_af_10x/experiments/scRNA_scCSF/analysis/demultiplexed_rds_objects/CD34_NCKO/")
+files_to_load <- list.files(path_to_sample)
+#files_to_load <- files_to_load[1:2]
+gem_ids <- files_to_load %>%
+  str_remove("GEX_CD34_") %>%
+  str_remove("_NCKO_library_run_1to3.rds")
+files_to_load <- str_c(path_to_sample, files_to_load, sep = "")
+path_to_results<- str_c(
+  "/Users/Inma/Documents/mnt/r26rci/projects/p069_af_10x/experiments/scRNA_scCSF/analysis/demultiplexed_rds_objects/CD34_NCKO_results/")
+
+#purrr::map() is a function for applying a function to each element of a list. 
+#https://jennybc.github.io/purrr-tutorial/ls01_map-name-position-shortcuts.html
+NCKO_list <- purrr::map(files_to_load, readRDS)
+names(NCKO_list) <- gem_ids
+path_to_metadata <- "/Users/Inma/Documents/mnt/r26rci/projects/p069_af_10x/metainfo/metadata_CD34_NCKO.xls"
+
+path_to_save <- str_c(path_to_sample, "NCKO_merged.rds", sep = "")
+path_to_save_markers <- str_c(path_to_sample, "markers_NCKO.xls", sep = "")
+
+path_to_save <- str_c(path_to_results, "AML_healthy_merged.rds", sep = "")
+path_to_results_Cluster <- str_c(path_to_results, "CD34_NCKO_integrated_FinalObject.rds", sep = "")
+
+for (i in 1:length(NCKO_list)) {
+  print(gem_ids[i])
+  NCKO_list[[i]]$orig.ident <- gem_ids[i]
+  NCKO_list[[i]]$group <- NCKO_list[[i]]$hash.ID
+  NCKO_list[[i]]$group <- revalue(NCKO_list[[i]]$group, c("Sample1" = "NC", "Sample2"= "STAG2KO"))
+  NCKO_list[[i]]$ID <- paste(NCKO_list[[i]]$group,NCKO_list[[i]]$orig.ident, sep = "_")
+  print(table(NCKO_list[[i]]$group))
+  Idents(NCKO_list[[i]]) <- "group"
+  NCKO_list[[i]] <- subset(NCKO_list[[i]], idents = c("NC","STAG2KO"))
+}
+
+NCKO_hashed  <- merge(NCKO_list[[1]],
+                       y = NCKO_list[2: length(NCKO_list)],
+                       add.cell.ids = names(NCKO_list))
+
+
+
+#Filtering by MT percent, number of features and number of counts
+
+NCKO_hashed[["percent.mt"]] <- PercentageFeatureSet(NCKO_hashed, pattern = "^MT-")
+
+VlnPlot(NCKO_hashed, 
+        c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3, group.by = "ID", pt.size = -1)
+
+```
+
+
+## 2. Quality plots
+
+
+```{r,echo=FALSE}
+#plot common distribution number of counts, number of features
+mid <- 5
+p  = ggplot(NCKO_hashed@meta.data, aes(x = nCount_RNA, y = nFeature_RNA)) + geom_point(aes(color = percent.mt), size = 1) +
+scale_color_gradient2(midpoint = mid, low = "black", mid = "grey", high ="red") + scale_y_continuous(trans = "log10") + scale_x_continuous(trans = "log10") + theme_cowplot(12) + geom_vline(xintercept = 750, linetype = 3) + geom_hline(yintercept = 250, linetype = 3) 
+ggMarginal(p, type = "densigram", size = 10)
+p
+
+#plot individual distribution number of counts, number of features
+
+ggplot(NCKO_hashed@meta.data, aes(x = nCount_RNA, y = nFeature_RNA)) + geom_point(aes(color = percent.mt), size = 1) +
+scale_color_gradient2(midpoint = mid, low = "black", mid = "grey", high ="red") + scale_y_continuous(trans = "log10") + scale_x_continuous(trans = "log10") + theme_cowplot(12) + facet_wrap( ~ID, ncol = 2) + geom_vline(xintercept = 750, linetype = 3) + geom_hline(yintercept = 250, linetype = 3)
+
+#plot number of genes
+
+n_genes_hist1 <- NCKO_hashed@meta.data %>%
+  ggplot(aes(nFeature_RNA)) +
+    geom_histogram(bins = 100) +
+    labs(x = "Number of Detected Genes", y = "Number of Cells") +
+    # scale_x_log10() +
+    theme_pubr()
+n_genes_hist2 <- NCKO_hashed@meta.data %>%
+  ggplot(aes(nFeature_RNA)) +
+    geom_histogram(bins = 100) +
+    scale_x_continuous(limits = c(0, 1000)) +
+    labs(x = "Number of Detected Genes", y = "Number of Cells") +
+    theme_pubr()
+
+ggarrange(plotlist = list(n_genes_hist1, n_genes_hist2), ncol = 2)
+
+
+
+n_genes_hist1 <- NCKO_hashed@meta.data %>%
+  ggplot(aes(nCount_RNA)) +
+    geom_histogram(bins = 100) +
+    labs(x =  "Library Size (log10(total UMI))", y = "Number of Cells") +
+    # scale_x_log10() +
+    theme_pubr()
+n_genes_hist2 <- NCKO_hashed@meta.data %>%
+  ggplot(aes(nCount_RNA)) +
+    geom_histogram(bins = 100) +
+    scale_x_continuous(limits = c(0, 1000)) +
+    labs(x =  "Library Size (log10(total UMI))", y = "Number of Cells") +
+    theme_pubr()
+
+ggarrange(plotlist = list(n_genes_hist1, n_genes_hist2), ncol = 2)
+
+
+## Subset empty droplets and lysed cells
+
+min_lib_size <- 750
+min_n_genes <- 250
+max_pct_mt <- 5
+min_cells <- 5
+
+metadata_before_qc <- NCKO_hashed@meta.data
+is_low_quality <- 
+  NCKO_hashed$nCount_RNA < min_lib_size |
+  NCKO_hashed$nFeature_RNA < min_n_genes |
+  NCKO_hashed$percent.mt > max_pct_mt
+table(is_low_quality)
+NCKO_hashed$keep_cells <- !is_low_quality
+Idents(NCKO_hashed) <- "keep_cells"
+table(NCKO_hashed$keep_cells)
+NCKO_hashed <- subset(NCKO_hashed, idents = TRUE)
+metadata_after_qc <- NCKO_hashed@meta.data
+
+saveRDS(NCKO_hashed, file = path_to_save)
+```
+
+## 2. Normalization and integration
+
+
+```{r,echo=FALSE}
+
+#Clusters <- readRDS(path_to_save)
+
+Clusters <- NCKO_hashed
+Clusters <- NormalizeData(
+  Clusters,
+  normalization.method = "LogNormalize",
+  scale.factor = 1e4
+)
+
+Clusters[["RNA"]]@data[1:10, 1:10]
+
+Clusters <- Clusters %>%
+  FindVariableFeatures(nfeatures = 3000) %>%
+  ScaleData() %>% 
+  RunPCA()
+
+Clusters <- RunHarmony(Clusters, group.by.vars = "orig.ident")
+
+Clusters <- Clusters %>% 
+  RunUMAP(reduction = "harmony", dims = 1:50) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>% 
+  FindClusters(resolution = 0.5) %>% 
+  identity()
+
+Clusters@active.assay <- "RNA"
+markers <- FindAllMarkers(Clusters, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.5)
+markers <- markers %>% filter(p_val_adj < 0.05)
+WriteXLS(markers, ExcelFileName = path_to_save_markers)
+
+DimPlot(Clusters, split.by = "ID", label = TRUE)
+DimPlot(Clusters, split.by = "group", label = TRUE)
+
+markers %>%
+    group_by(cluster) %>%
+    top_n(n = 5, wt = avg_log2FC) -> top10
+#DoHeatmap(Clusters, features = top10$gene) + NoLegend()
+
+
+
+Idents(Clusters) <- "seurat_clusters"
+new.cluster.ids <- c("HSC","MACDC","NEUT","MAST","MONO","BCELL","GMP","MAST","NEUT","ERY","CLP","GMP","MACDC")
+names(new.cluster.ids) <- levels(Clusters)
+Clusters <- RenameIdents(Clusters, new.cluster.ids)
+Clusters[["Subclusters"]] <- Idents(Clusters)
+Idents(Clusters) <- "Subclusters"
+DimPlot(Clusters, label = TRUE)
+
+
+cluster_cols <- c("HSC" = "#ECA809",                    # Prussian Blue.
+                  "NEUT" = "#043362",                    # Prussian Blue.
+                  "MAST" = "#009FF5",                     # Carolina Blue.
+                  "MONO" = "#BC5210",            # Burnt Orange.
+                  "BCELL" = "#e9d8a6",                  # Celadon Green.
+                  "GMP" = "#7EB356",                   # Bud Green.
+                  "ERY" = "#AC70FF",                   # Medium Purple.
+                  "CLP" = "#63412C",                   # Van Dyke Brown.
+                  "MACDC" = "#D6D6D6")
+
+do_DimPlot(Clusters, group.by = "Subclusters", colors.use = cluster_cols)
+library(magrittr)
+do_BarPlot(Clusters,var.to.plot = "group", group.by = "Subclusters", position = "fill", horizontal =  FALSE)
+
+Clusters@active.assay <- "RNA"
+Idents(Clusters) <- "Subclusters"
+saveRDS(Clusters, path_to_results_Cluster)
+
+
+markers <- FindAllMarkers(Clusters, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.5)
+markers <- markers %>% filter(p_val_adj < 0.05)
+saveRDS(markers, file = "/Users/Inma/Documents/mnt/r26rci/projects/p069_af_10x/experiments/scRNA_scCSF/analysis/demultiplexed_rds_objects/CD34_NCKO/markers_annotat.rds")
+
+DimPlot(Clusters, split.by = "ID", label = TRUE, repel = TRUE)
+DimPlot(Clusters, split.by = "group", label = TRUE, repel = TRUE)
+
+```
+
+
+## Markers per cell type
+```{r,echo=FALSE, fig.width=16, fig.height=12}
+markers %>%
+    group_by(cluster) %>%
+    top_n(n = 5, wt = avg_log2FC) -> top10
+DoHeatmap(Clusters, features = top10$gene) + NoLegend() + 
+    theme(text = element_text(size = 20))
+
+```
+
+## HSC outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("MEF2C","SMC2","CDK1","S100B", "HMGB3", "FKBP4"))
+p3 + plot_layout(ncol = 2)
+```
+
+## CLP outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("CD34","SOCS2","HOXA9","MEF2C"))
+p3 + plot_layout(ncol = 2)
+```
+
+## GMP outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("CYTL1", "TPSAB1", "CFD", "CLEC11A", "GYPC"))
+p3 + plot_layout(ncol = 2)
+```
+
+## MACDC outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("CD14","IRF8","NFKB1","CD4","SPI1", "CD86", "CLEC10A"))
+p3 + plot_layout(ncol = 2)
+```
+
+## NEUT outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("CSF3R", "CLEC12A", "MYO1F", "FCN1", "MYB"))
+p3 + plot_layout(ncol = 2)
+```
+
+
+## MAST outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("KIT","CD33","BTK","FCER1A","CCL2"))
+p3 + plot_layout(ncol = 2)
+```
+
+## MONO outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("S100A8","S100A9","HLA-A","HLA-B","CD14","SPI1"))
+p3 + plot_layout(ncol = 2)
+```
+
+## BCELL outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("SOX4","JCHAIN","HOXA9"))
+p3 + plot_layout(ncol = 2)
+```
+
+## ERY outstanding markers
+```{r,echo=FALSE}
+p3 <- plot_density(Clusters, c("HBG1","HBB", "HBA1"))
+p3 + plot_layout(ncol = 2)
+```
+
+
+## Barplot 
+```{r,echo=FALSE, fig.width=12, fig.height=10}
+ggplot(Clusters@meta.data, aes(x=group, fill=Subclusters)) + geom_bar(position = "fill") + scale_fill_manual(values=c("#BC3C29FF", "#0072B5FF", "#E18727FF","#20854EFF", "#7876B1FF", "#6F99ADFF","#FFDC91FF" ,"#EE4C97FF", "grey"))  + 
+    theme(text = element_text(size = 20))
+```
+
+
+```{r,echo=FALSE, fig.width=12, fig.height=10}
+ggplot(Clusters@meta.data, aes(x=ID, fill=Subclusters)) + geom_bar(position = "fill") + scale_fill_manual(values=c("#BC3C29FF", "#0072B5FF", "#E18727FF","#20854EFF", "#7876B1FF", "#6F99ADFF","#FFDC91FF" ,"#EE4C97FF", "grey"))  + 
+    theme(text = element_text(size = 16))
+```
+
+## Projection of bulk RNA DE genes
+```{r,echo=FALSE, fig.width=18, fig.height=18}
+SA2KO = c("CD22","MMP9","ADAM12","SLC45A3","SPATS2L","PDE4DIP","CCR5","PHLDA2","PKLR")
+
+p3 <- plot_density(Clusters, SA2KO)
+p3 + plot_layout(ncol = 3)
+```
+
+
+```{r,echo=FALSE, fig.width=18, fig.height=18}
+CONTROL = c("IGFBP5","PDE5A","ANK3","IGFBP5", "RAB6B","CALD1","MMRN1","CDHR1","SIDT1")
+
+p4 <- plot_density(Clusters, CONTROL)
+p4 + plot_layout(ncol = 3)
+```
+
+## genes of interest
+```{r,echo=FALSE, fig.width=18, fig.height=18}
+genes = c("ITGA9","PROM1",  "NPR3", "DACT1", "SMYD3")
+
+p4 <- plot_density(Clusters, genes)
+p4 + plot_layout(ncol = 3)
+```

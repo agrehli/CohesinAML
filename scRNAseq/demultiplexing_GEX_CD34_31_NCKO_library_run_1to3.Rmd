@@ -1,0 +1,186 @@
+---
+author: "Inma Hernandez"
+date: "2021/12/22"
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, out.width = "100%", fig.align='center', 
+                      message=FALSE, warning = FALSE)
+options(width = 1200)
+
+```
+
+
+## Introduction
+  
+HTO are cross-linked with antibodies that bind to ubiquitous cell surface proteins. We then multiplexed all batches and processed them into the same 10X Chromium Chip Channel ([GEM well](https://support.10xgenomics.com/single-cell-gene-expression/software/pipelines/latest/glossary)), hence sequencing together HTO and single-cell gene expression reads (cDNA). Finally, we can detect inter-batch doublets as those cell barcodes that have high counts of two or more HTO.
+
+The objective of this notebook is to demultiplex the barcodes (cells) back to its original batch to discard doublets and negative cells.
+
+
+## Load packages
+
+```{r}
+library(Seurat)
+library(scales)
+library(tidyverse)
+```
+
+
+## Parameters
+
+```{r,eval=T,echo=FALSE}
+# Paths
+sample <- "GEX_CD34_31_NCKO_library_run_1to3"
+path_to_data <- str_c(
+  "/Users/Inma/Documents/mnt/r26rci/projects/p069_af_10x/experiments/scRNA_scCSF/analysis/cellranger_20211216/",sample,
+  "/outs/filtered_feature_bc_matrix/"
+)
+save_object_path <- str_c(
+  "/Users/Inma/Documents/mnt/r26rci/projects/p069_af_10x/experiments/scRNA_scCSF/analysis/demultiplexed_rds_objects/", sample,".rds")
+
+```
+
+
+## Load data
+
+```{r}
+matrices <- Read10X(data.dir = path_to_data)
+```
+
+
+# Demultiplex
+
+## Sample 1: scRNA_GEX_CD34_31_NC
+## Sample 2: scRNA_GEX_CD34_31_KO
+
+To demultiplex, we will follow the ["Demultiplexing with hashtag oligos (HTOs)" pipeline from Seurat](https://satijalab.org/seurat/v3.0/hashing_vignette.html):
+  
+```{r, echo=FALSE}
+
+# Setup Seurat object
+AML <- CreateSeuratObject(counts = matrices$`Gene Expression`)
+# Add HTO as an independent assay
+AML[["HTO"]] <- CreateAssayObject(counts = matrices$`Antibody Capture`)
+AML <- NormalizeData(AML, assay = "HTO", normalization.method = "CLR")
+# Demultiplex
+AML <- HTODemux(AML, assay = "HTO", positive.quantile = 0.99)
+
+```
+
+
+# Visualization
+
+We can visualize the results as ridge plots and heatmaps:
+  
+  ## Ridge plots
+  
+```{r fig.height=10, fig.width=14,echo=FALSE}
+table(AML$HTO_classification.global)
+table(AML$HTO_classification)
+Idents(AML) <- "HTO_maxID"
+RidgePlot(
+  object = AML, 
+  assay = "HTO", 
+  features = rownames(AML[["HTO"]]), 
+  ncol = 3
+)
+```
+
+
+## Heatmaps
+
+```{r,eval=T,echo=FALSE}
+HTOHeatmap(AML, assay = "HTO", ncells = 5000)
+```
+
+In this heatmap, each column represents a 10X barcode, and each row the expression of a batch-specific HTO. We can visualize singlets, doublets and negative cells (ie not labelled by any HTO). We strive for a similar number of cells across batches, as this increases our ability to identify doublets.
+
+
+## tSNE
+
+We can visualize the tSNE embedding of cells in HTO space. A clear separation of clusters would indicate a good labeling:
+  
+```{r,echo=FALSE}
+AML_subset <- subset(
+  AML,
+  subset = HTO_classification.global == "Negative",
+  invert = TRUE
+)
+DefaultAssay(AML_subset) <- "HTO"
+AML_subset <- AML_subset %>%
+  ScaleData(features = rownames(AML_subset), verbose = TRUE) %>%
+  RunPCA(features = c("Sample1","Sample2"), approx = FALSE) %>%
+  RunTSNE(dims = 1:2, perplexity = 100,check_duplicates = FALSE)
+DimPlot(AML_subset, group.by = "HTO_classification.global")
+```
+
+
+## Number of cells
+
+Let us visualize the numbers of singlets/doublets/negative:
+  
+```{r, echo=FALSE}
+
+Idents(AML) <- "HTO_classification.global"
+VlnPlot(AML, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+
+# Absolute frequencies
+hto_levels <- c("Singlet", "Doublet", "Negative")
+AML_df <- AML@meta.data %>%
+  group_by(HTO_classification.global) %>% 
+  summarise(count = n()) %>%
+  mutate(percentage = (count / sum(count)) * 100) %>%
+  mutate(HTO_classification.global = factor(
+    HTO_classification.global, 
+    levels = hto_levels))
+AML_count_gg <- AML_df %>% 
+  ggplot(aes(HTO_classification.global, count, fill = HTO_classification.global)) +
+  geom_col() +
+  geom_text(aes(label = count), 
+            position = position_dodge(width = 0.9), vjust = -0.25) +
+  labs(title = "", x = "", y = "number of cells") +
+  theme_bw() +
+  scale_fill_brewer(palette = "Dark2") +
+  theme(axis.text.x = element_text(size = 11), 
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "none")
+AML_count_gg
+# Percentages
+AML_pct_gg <- AML_df %>% 
+  ggplot(aes(x = "", y = percentage, fill = HTO_classification.global)) +
+  geom_bar(width = 1, stat = "identity") +
+  geom_text(
+    aes(label = percent(percentage / 100)),
+    position = position_stack(vjust = 0.5),
+    size = 4
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_polar("y", start = 0) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_blank(),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11)
+  )
+AML_pct_gg
+```
+
+From the 10X protocols and our experience, we know that there is a linear relationship between the percentage of doublets and the target number of cells per 10X Chromium Chip Channel (GEM well); with a slope of 8% doublets for 10,000 cells. Thus, if we do not use cell hashing we normally aim for 5,000 cells, as 4% doublets will not have a large impact in our analysis. However, detecting doublets with hashing allowed us to overload the 10X lane and get a higher throughput.
+
+# Save demultiplexed Seurat objects
+
+```{r}
+saveRDS(AML, save_object_path)
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
