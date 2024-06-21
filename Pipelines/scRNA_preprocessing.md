@@ -53,7 +53,7 @@ fastqs,sample,library_type
 ```
 
 
-CD34
+CD34_31_NCKO
 ```bash
 cellranger-6.0.1 count --id=GEX_CD34_31_NCKO_library_run_1to3 --libraries=/misc/rci/projects/p069_af_10x/metainfo/library/GEX_CD34_31_NCKO_library.csv --feature-ref=/misc/rci/projects/p069_af_10x/metainfo/Features_list28092021.csv --transcriptome=/misc/software/ngs/cellranger/refdata/refdata-gex-GRCh38-2020-A --localcores=12 --localmem=64 --expect-cells=10000
 ```
