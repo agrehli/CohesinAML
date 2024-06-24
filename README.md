@@ -4,7 +4,7 @@ Pipelines and scripts to reproduce the analysis in Fischer et al. (2024)
 # Description
 The repository is structured based on data packages that were analysed partially dependent from each other. This includes the following analyses in the order listed:
 
-- Scripts to analyse mutation screening data (???)
+- Scripts to analyse mutation screening data ([Mutations folder](Mutations/))
 - Scripts and input csv files to analyse and visualize HSPC culture expansion rates, genome editing rates and colony forming untit (CFU) results ([HSPC_cultures folder](HSPC_cultures/))
 - Pipelines for mapping ChIP/ATAC/RNA-seq and routine scripts used for several downstream analyses ([Pipelines folder](Pipelines/))
 - Scripts to analyse and visualize RNA-seq results after mapping ([RNAseq folder](RNAseq/))
