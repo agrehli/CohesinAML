@@ -1,5 +1,6 @@
 # CohesinAML
-Pipelines and scripts to reproduce the analysis in Fischer et al. (2024)  
+Pipelines and scripts to reproduce the analysis in Fischer et al. (2024)
+Original release: DOI 10.5281/zenodo.12516010
 
 # Description
 The repository is structured based on data packages that were analysed partially dependent from each other. This includes the following analyses in the order listed:
