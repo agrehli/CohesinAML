@@ -1,6 +1,8 @@
 # CohesinAML
-Pipelines and scripts to reproduce the analysis in Fischer et al. (2024)
-Original release: DOI 10.5281/zenodo.12516010
+Pipelines and scripts to reproduce the analysis in Fischer et al., Cell Reports (2024) PMID: 39084219
+https://doi.org/10.1016/j.celrep.2024.114498
+
+Original code release: DOI 10.5281/zenodo.12516010
 
 # Description
 The repository is structured based on data packages that were analysed partially dependent from each other. This includes the following analyses in the order listed:
